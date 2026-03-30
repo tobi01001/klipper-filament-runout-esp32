@@ -1,8 +1,15 @@
 #pragma once
 
 // ─── GPIO Pin Assignments ─────────────────────────────────────────────────────
-#define PIN_ENCODER_CHA   25   // Quadrature encoder Channel A (rising + falling)
-#define PIN_ENCODER_CHB   26   // Quadrature encoder Channel B (rising + falling)
+// KY-040 rotary encoder module pinout:
+//   CLK (Channel A) → PIN_ENCODER_CHA
+//   DT  (Channel B) → PIN_ENCODER_CHB
+//   SW  (push button, active LOW) → PIN_ENCODER_SW
+//   +   (VCC) → 3.3 V
+//   GND → GND
+#define PIN_ENCODER_CHA   25   // KY-040 CLK – quadrature Channel A (interrupt on CHANGE)
+#define PIN_ENCODER_CHB   26   // KY-040 DT  – quadrature Channel B (interrupt on CHANGE)
+#define PIN_ENCODER_SW    32   // KY-040 SW  – push-button (active LOW, internal pull-up)
 #define PIN_RUNOUT        27   // Runout output to Klipper filament sensor (active LOW)
 
 // ─── FreeRTOS / Task Configuration ───────────────────────────────────────────
@@ -24,6 +31,9 @@
 #define DEFAULT_MOTION_THRESH  1            // minimum |ticks| to count as motion
 #define DEFAULT_MOONRAKER_IP   "192.168.1.100"
 #define DEFAULT_MOONRAKER_PORT 7125
+
+// ─── Encoder Button Debounce ──────────────────────────────────────────────────
+#define ENCODER_BTN_DEBOUNCE_MS  50UL  // ignore edges within this window (ms)
 
 // ─── EMA Velocity Filter ─────────────────────────────────────────────────────
 #define EMA_ALPHA  0.3f   // exponential moving average weight (0 = no response)

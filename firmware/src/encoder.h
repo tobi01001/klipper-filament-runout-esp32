@@ -10,9 +10,18 @@
 extern volatile uint32_t g_last_motion_ms;
 
 /**
+ * @brief Set by the SW-pin ISR when the KY-040 push-button is pressed.
+ *
+ * Cleared by the consumer (fault_detector_update) after each read.
+ * Single 8-bit write/read is atomic on Xtensa LX6 – no mutex needed.
+ */
+extern volatile bool g_button_pressed;
+
+/**
  * @brief Initialise GPIO pins and attach quadrature interrupts.
  *
  * Must be called from a Core 1 context so the ISRs are pinned there.
+ * Configures CLK (ChA), DT (ChB), and SW (push-button) pins of the KY-040.
  *
  * @param queue  Single-slot overwriting queue; encoder_task writes latest
  *               EncoderData here every ENCODER_UPDATE_MS milliseconds.

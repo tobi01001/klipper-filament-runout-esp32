@@ -3,11 +3,15 @@
 
 // ─── ISR-visible globals ──────────────────────────────────────────────────────
 volatile uint32_t g_last_motion_ms = 0;
+volatile bool     g_button_pressed = false;
 
 static volatile int32_t  s_tick_count = 0;
 static volatile int8_t   s_direction  = 0;
 static volatile uint8_t  s_prev_state = 0;
 static portMUX_TYPE      s_mux        = portMUX_INITIALIZER_UNLOCKED;
+
+// ─── Button debounce state (ISR-visible) ─────────────────────────────────────
+static volatile uint32_t s_btn_last_ms = 0;
 
 static QueueHandle_t     s_queue = nullptr;
 static const SensorConfig *s_cfg = nullptr;
@@ -24,7 +28,7 @@ static const int8_t QEM[16] = {
      0, -1, +1,  0   // prev = 0b11
 };
 
-// ─── ISR ─────────────────────────────────────────────────────────────────────
+// ─── ISR – quadrature channels ───────────────────────────────────────────────
 static void IRAM_ATTR encoder_isr() {
     // Read both channels atomically (both reads < 100 ns, encoder << 1 MHz)
     const uint8_t chA  = static_cast<uint8_t>(digitalRead(PIN_ENCODER_CHA));
@@ -44,6 +48,19 @@ static void IRAM_ATTR encoder_isr() {
     s_prev_state = curr;
 }
 
+// ─── ISR – KY-040 push-button (SW pin, active LOW) ───────────────────────────
+static void IRAM_ATTR button_isr() {
+    // Only react to falling edge (button press); rising edge = release
+    if (digitalRead(PIN_ENCODER_SW) != LOW) {
+        return;
+    }
+    const uint32_t now = static_cast<uint32_t>(millis());
+    if ((now - s_btn_last_ms) >= ENCODER_BTN_DEBOUNCE_MS) {
+        s_btn_last_ms  = now;
+        g_button_pressed = true;
+    }
+}
+
 // ─── Public API ──────────────────────────────────────────────────────────────
 void encoder_init(QueueHandle_t queue, const SensorConfig *cfg) {
     s_queue = queue;
@@ -51,6 +68,7 @@ void encoder_init(QueueHandle_t queue, const SensorConfig *cfg) {
 
     pinMode(PIN_ENCODER_CHA, INPUT_PULLUP);
     pinMode(PIN_ENCODER_CHB, INPUT_PULLUP);
+    pinMode(PIN_ENCODER_SW,  INPUT_PULLUP);
 
     // Capture initial state so first ISR transition is interpreted correctly
     const uint8_t chA  = static_cast<uint8_t>(digitalRead(PIN_ENCODER_CHA));
@@ -59,9 +77,11 @@ void encoder_init(QueueHandle_t queue, const SensorConfig *cfg) {
 
     attachInterrupt(digitalPinToInterrupt(PIN_ENCODER_CHA), encoder_isr, CHANGE);
     attachInterrupt(digitalPinToInterrupt(PIN_ENCODER_CHB), encoder_isr, CHANGE);
+    attachInterrupt(digitalPinToInterrupt(PIN_ENCODER_SW),  button_isr,  CHANGE);
 
-    Serial.println("[ENC] Encoder initialised (ChA=" + String(PIN_ENCODER_CHA) +
-                   ", ChB=" + String(PIN_ENCODER_CHB) + ")");
+    Serial.println("[ENC] Encoder initialised (CLK=" + String(PIN_ENCODER_CHA) +
+                   ", DT=" + String(PIN_ENCODER_CHB) +
+                   ", SW=" + String(PIN_ENCODER_SW) + ")");
 }
 
 void encoder_task(void * /*param*/) {
