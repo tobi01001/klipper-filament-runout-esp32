@@ -1,6 +1,6 @@
 # Filament Runout Sensor – Hardware Specification
 
-**Version**: 1.0 | **Date**: 2026-03-30 | **Author**: tobi01001
+**Version**: 1.1 | **Date**: 2026-03-30 | **Author**: tobi01001
 
 ---
 
@@ -8,13 +8,13 @@
 
 | # | Component | Value / Part | Qty | Notes |
 |---|-----------|-------------|-----|-------|
-| 1 | MCU | ESP32 Dev Board (38-pin, 4 MB Flash) | 1 | Any ESP32 with exposed GPIO 25/26/27 |
-| 2 | Optical encoder | PMW3360 or PMW3389 mouse sensor module **OR** generic quadrature optical encoder | 1 | Must provide two-channel (A/B) quadrature output |
+| 1 | MCU | ESP32 Dev Board (38-pin, 4 MB Flash) | 1 | Any ESP32 with exposed GPIO 25/26/27/32 |
+| 2 | Rotary encoder | **KY-040** rotary encoder module | 1 | 5-pin module: GND, +, SW, DT, CLK |
 | 3 | Filament guide | Printed PLA/PETG guide body | 1 | Mounts encoder wheel against filament path |
-| 4 | Pull-up resistors | 10 kΩ | 2 | **Optional.** GPIO 25/26 use the ESP32's built-in pull-ups (≈ 45 kΩ), which are sufficient for most encoders. Add external 10 kΩ resistors only if signal quality is poor on long cable runs (> ~30 cm). |
+| 4 | Pull-up resistors | 10 kΩ | 2 | **Optional.** GPIO 25/26/32 use the ESP32's built-in pull-ups (≈ 45 kΩ), which are sufficient for the KY-040. Add external 10 kΩ resistors only if signal quality is poor on long cable runs (> ~30 cm). |
 | 5 | Status LED | Common-cathode RGB LED | 1 | Optional; connect via 330 Ω resistors to spare GPIO |
 | 6 | Decoupling capacitor | 100 nF ceramic | 1 | Across ESP32 3.3 V / GND near encoder supply |
-| 7 | Connector | JST-XH 4-pin (or similar) | 1 | For encoder cable to ESP32 |
+| 7 | Connector | JST-XH 5-pin (or similar) | 1 | For KY-040 cable to ESP32 |
 | 8 | USB-C / Micro-USB cable | Power / programming | 1 | Matches ESP32 board variant |
 | 9 | 3-pin dupont cable | Runout signal wiring | 1 | GPIO 27, GND, and optional 3.3 V |
 
@@ -24,47 +24,53 @@
 
 | GPIO | Direction | Signal | Notes |
 |------|-----------|--------|-------|
-| **25** | Input | Encoder Channel A (ChA) | Pull-up enabled; interrupt on CHANGE |
-| **26** | Input | Encoder Channel B (ChB) | Pull-up enabled; interrupt on CHANGE |
+| **25** | Input | KY-040 CLK (Channel A) | Pull-up enabled; interrupt on CHANGE |
+| **26** | Input | KY-040 DT  (Channel B) | Pull-up enabled; interrupt on CHANGE |
+| **32** | Input | KY-040 SW  (push-button) | Pull-up enabled; active LOW – press to reset fault |
 | **27** | Output | Klipper runout signal | **Active LOW**; idle = HIGH, fault = LOW |
 
-> **All three pins are configurable** at compile-time in `firmware/src/config.h`.
+> **All pins are configurable** at compile-time in `firmware/src/config.h`.
 
 ---
 
 ## 3. Encoder Wiring
 
-### 3.1 Quadrature Encoder (generic)
+### 3.1 KY-040 Rotary Encoder Module
+
+The KY-040 is a 5-pin breakout board with a mechanical rotary encoder and an
+integrated push-button switch.
+
+```
+KY-040 Pin     ESP32 Dev Board
+──────────     ──────────────
+  GND  ──────── GND
+  +    ──────── 3.3 V
+  SW   ──────── GPIO 32  (internal pull-up; press to reset a runout fault)
+  DT   ──────── GPIO 26  (Channel B – internal pull-up)
+  CLK  ──────── GPIO 25  (Channel A – internal pull-up)
+```
+
+> **Internal pull-ups**: The firmware calls `pinMode(PIN_ENC_x, INPUT_PULLUP)`
+> for all three signal pins, so the ESP32's built-in ≈ 45 kΩ pull-ups are
+> always active.  External resistors are only needed if the encoder cable is
+> longer than ≈ 30 cm and you observe signal glitches.
+
+**Push-button function**: Pressing the KY-040 knob clears an active runout
+fault (same as the "Reset Fault" button in the web interface).
+
+### 3.2 Generic Quadrature Encoder (alternative)
 
 ```
 Encoder Board          ESP32 Dev Board
 ──────────────         ──────────────
   VCC  ─────────────── 3.3V
   GND  ─────────────── GND
-  ChA  ─────────────── GPIO 25  (internal pull-up enabled in firmware; no external resistor needed)
-  ChB  ─────────────── GPIO 26  (internal pull-up enabled in firmware; no external resistor needed)
+  ChA  ─────────────── GPIO 25
+  ChB  ─────────────── GPIO 26
 ```
 
-> **Internal pull-ups**: The firmware calls `pinMode(PIN_ENC_A, INPUT_PULLUP)` and `pinMode(PIN_ENC_B, INPUT_PULLUP)`, so the ESP32's built-in ≈ 45 kΩ pull-ups are always active.  External resistors are only needed if the encoder cable is longer than ≈ 30 cm and you observe signal glitches.
-
-### 3.2 Reusing an old optical mouse
-
-The simplest no-extra-hardware approach is to harvest the encoder mechanism from a **ball mouse** or any optical mouse that exposes quadrature A/B signals on its scroll-wheel encoder:
-
-```
-Old mouse encoder     ESP32 Dev Board
-─────────────────     ──────────────
-  VCC  ───────────── 3.3V
-  GND  ───────────── GND
-  ChA  ───────────── GPIO 25
-  ChB  ───────────── GPIO 26
-```
-
-Quadrature signals are directly compatible with the firmware's ISR — no adapter required.
-
-#### What about PMW3360 / PMW3389 SPI modules?
-
-These sensors communicate over **SPI**, not quadrature.  The ESP32 has a native SPI peripheral, so no adapter MCU is needed — but the current firmware does not yet implement SPI reading.  If you want to use a PMW3360/PMW3389 module directly, the firmware's `encoder.cpp` would need to be extended with SPI polling code (the hardware wiring would use MISO/MOSI/SCK/CS pins instead of GPIO 25/26).  A pre-built mouse-sensor breakout that **already converts to quadrature output** can still be used with the current firmware unchanged.
+> GPIO 32 (SW) can be left disconnected when using a generic encoder without
+> a built-in button.
 
 ---
 
@@ -92,10 +98,11 @@ ESP32 GPIO 27 (e.g., `gpio21`).
 ## 5. Schematic (Simplified)
 
 ```
- Encoder ChA ───────────────── GPIO 25  [~45 kΩ internal pull-up to 3.3V]
- Encoder ChB ───────────────── GPIO 26  [~45 kΩ internal pull-up to 3.3V]
- Encoder VCC ───────────────── 3.3V
- Encoder GND ───────────────── GND
+ KY-040 CLK ─────────────────── GPIO 25  [~45 kΩ internal pull-up to 3.3V]
+ KY-040 DT  ─────────────────── GPIO 26  [~45 kΩ internal pull-up to 3.3V]
+ KY-040 SW  ─────────────────── GPIO 32  [~45 kΩ internal pull-up to 3.3V]
+ KY-040 +   ─────────────────── 3.3V
+ KY-040 GND ─────────────────── GND
 
  GPIO 27 ──────────────────────────────── Klipper runout pin
  GND    ───────────────────────────────── Klipper GND
@@ -107,7 +114,7 @@ ESP32 GPIO 27 (e.g., `gpio21`).
 
 ## 6. Mechanical Mounting
 
-- The encoder sensing wheel must contact the filament with light, consistent pressure.
+- The encoder wheel must contact the filament with light, consistent pressure.
 - A printed guide body with an adjustable spring-loaded arm is recommended.
 - Wheel diameter and gear ratio determine the **calibration factor** (mm/tick).
 - After mounting, calibrate using the web interface (see User Instructions).
@@ -119,8 +126,8 @@ ESP32 GPIO 27 (e.g., `gpio21`).
 | Supply | Voltage | Current (typical) |
 |--------|---------|------------------|
 | ESP32 via USB | 5 V | < 250 mA |
-| Encoder module | 3.3 V from ESP32 | < 20 mA |
-| Total | 5 V USB | < 280 mA |
+| KY-040 module | 3.3 V from ESP32 | < 5 mA |
+| Total | 5 V USB | < 260 mA |
 
 A standard 5 V / 0.5 A USB charger or the printer's USB port is sufficient.
 

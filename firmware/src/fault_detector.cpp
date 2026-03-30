@@ -76,9 +76,20 @@ void fault_detector_update(float ext_vel_mm_s) {
         return;
     }
 
-    // Do not interfere with FAULT state – wait for explicit reset
+    // Do not interfere with FAULT state – wait for explicit reset.
+    // However, a physical button press always clears the fault.
     if (cur_state == SystemState::FAULT) {
+        if (g_button_pressed) {
+            g_button_pressed = false;
+            fault_detector_reset();
+        }
         return;
+    }
+
+    // Consume button press outside FAULT state (no-op; clears the flag)
+    if (g_button_pressed) {
+        g_button_pressed = false;
+        Serial.println("[FD] Button pressed (no active fault – ignored)");
     }
 
     if (ext_vel_mm_s >= s_cfg->min_ext_vel) {
