@@ -119,6 +119,16 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
     <input type="text" id="wifi-ssid" maxlength="63"/>
     <label>WiFi Password</label>
     <input type="text" id="wifi-pass" maxlength="63" placeholder="leave blank to keep current"/>
+    <div class="row">
+      <div>
+        <label>OTA hostname (.local)</label>
+        <input type="text" id="ota-host" maxlength="31" placeholder="filament-sensor"/>
+      </div>
+      <div>
+        <label>OTA push password</label>
+        <input type="password" id="ota-pass" maxlength="31" placeholder="leave blank to keep current"/>
+      </div>
+    </div>
     <button class="btn-save" onclick="saveConfig()">&#x1F4BE; Save &amp; Apply</button>
     <div id="msg"></div>
   </div>
@@ -131,8 +141,11 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
       <tr><td>Latest release</td>   <td id="ota-latest">-</td></tr>
       <tr><td>Status</td>           <td id="ota-status">-</td></tr>
     </table>
-    <button class="btn-save" onclick="triggerOtaUpdate()" style="margin-top:10px">
-      &#x2B06; Check &amp; Update from GitHub
+    <button class="btn-save" id="btn-check" onclick="checkForUpdates()" style="margin-top:10px">
+      &#x1F50D; Check for Updates
+    </button>
+    <button class="btn-reset" id="btn-apply" onclick="applyUpdate()" style="margin-top:6px;display:none">
+      &#x2B06; Apply Update
     </button>
   </div>
 
@@ -180,6 +193,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
           document.getElementById('mr-ip').value      = d.moonraker_ip;
           document.getElementById('mr-port').value    = d.moonraker_port;
           document.getElementById('wifi-ssid').value  = d.wifi_ssid;
+          document.getElementById('ota-host').value   = d.ota_hostname;
           maxVel = Math.max(10, d.min_ext_vel * 20);
         }).catch(()=>{});
     }
@@ -194,6 +208,8 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
         moonraker_port:   parseInt(document.getElementById('mr-port').value),
         wifi_ssid:        document.getElementById('wifi-ssid').value,
         wifi_pass:        document.getElementById('wifi-pass').value,
+        ota_hostname:     document.getElementById('ota-host').value,
+        ota_password:     document.getElementById('ota-pass').value,
       };
       fetch('/api/config', {method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify(body)})
@@ -216,16 +232,33 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
           document.getElementById('ota-ver').textContent    = d.version;
           document.getElementById('ota-latest').textContent = d.latest_tag || '—';
           document.getElementById('ota-status').textContent = d.status;
+          // Show "Apply Update" button only when a newer version is confirmed available.
+          document.getElementById('btn-apply').style.display =
+            d.status === 'update-available' ? 'block' : 'none';
         }).catch(()=>{});
     }
 
-    function triggerOtaUpdate() {
-      document.getElementById('ota-status').textContent = 'requesting…';
+    function checkForUpdates() {
+      document.getElementById('ota-status').textContent = 'checking…';
+      document.getElementById('btn-apply').style.display = 'none';
+      fetch('/api/ota/check', {method:'POST'})
+        .then(r=>r.json())
+        .then(d=>{
+          if (!d.ok) document.getElementById('ota-status').textContent = '✗ '+d.error;
+        })
+        .catch(()=>{ document.getElementById('ota-status').textContent = '✗ Request failed'; });
+    }
+
+    function applyUpdate() {
+      const tag = document.getElementById('ota-latest').textContent;
+      if (!confirm(`Apply firmware update ${tag}?\nThe device will reboot after flashing.`)) return;
+      document.getElementById('ota-status').textContent = 'starting update…';
+      document.getElementById('btn-apply').style.display = 'none';
       fetch('/api/ota/update', {method:'POST'})
         .then(r=>r.json())
         .then(d=>{
           if (!d.ok) document.getElementById('ota-status').textContent = '✗ '+d.error;
-          else document.getElementById('ota-status').textContent = 'checking…';
+          else document.getElementById('ota-status').textContent = 'downloading…';
         })
         .catch(()=>{ document.getElementById('ota-status').textContent = '✗ Request failed'; });
     }
@@ -292,6 +325,8 @@ static void handle_get_config() {
     doc["moonraker_ip"]     = snap.moonraker_ip;
     doc["moonraker_port"]   = snap.moonraker_port;
     doc["wifi_ssid"]        = snap.wifi_ssid;
+    doc["ota_hostname"]     = snap.ota_hostname;
+    // Password is never sent to the client for security reasons.
 
     String out;
     serializeJson(doc, out);
@@ -342,6 +377,21 @@ static void handle_post_config() {
                     sizeof(s_config->wifi_pass) - 1);
             s_config->wifi_pass[sizeof(s_config->wifi_pass) - 1] = '\0';
         }
+        if (doc["ota_hostname"].is<const char *>()) {
+            const char *new_host = doc["ota_hostname"].as<const char *>();
+            if (new_host[0] != '\0') {
+                strncpy(s_config->ota_hostname, new_host,
+                        sizeof(s_config->ota_hostname) - 1);
+                s_config->ota_hostname[sizeof(s_config->ota_hostname) - 1] = '\0';
+            }
+        }
+        // Only update OTA password if a non-empty value was supplied
+        const char *new_ota_pass = doc["ota_password"] | "";
+        if (new_ota_pass[0] != '\0') {
+            strncpy(s_config->ota_password, new_ota_pass,
+                    sizeof(s_config->ota_password) - 1);
+            s_config->ota_password[sizeof(s_config->ota_password) - 1] = '\0';
+        }
 
         nvs_save(*s_config);
         xSemaphoreGive(s_config_mutex);
@@ -370,6 +420,11 @@ static void handle_ota_get() {
     s_server.send(200, "application/json", out);
 }
 
+static void handle_ota_check() {
+    ota_github_check_request();
+    s_server.send(200, "application/json", "{\"ok\":true}");
+}
+
 static void handle_ota_update() {
     ota_github_update_request();
     s_server.send(200, "application/json", "{\"ok\":true}");
@@ -391,6 +446,7 @@ void web_init(SemaphoreHandle_t status_mutex,
     s_server.on("/api/config",     HTTP_POST, handle_post_config);
     s_server.on("/api/reset",      HTTP_POST, handle_reset);
     s_server.on("/api/ota",        HTTP_GET,  handle_ota_get);
+    s_server.on("/api/ota/check",  HTTP_POST, handle_ota_check);
     s_server.on("/api/ota/update", HTTP_POST, handle_ota_update);
 
     s_server.begin();

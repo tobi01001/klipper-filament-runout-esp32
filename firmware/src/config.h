@@ -73,6 +73,8 @@
 #define NVS_KEY_MR_PORT  "mr_port"
 #define NVS_KEY_SSID     "wifi_ssid"
 #define NVS_KEY_PASS     "wifi_pass"
+#define NVS_KEY_OTA_HOST "ota_hostname"
+#define NVS_KEY_OTA_PASS "ota_password"
 
 // ─── Firmware Version ─────────────────────────────────────────────────────────
 // Bump this when cutting a new GitHub release so the OTA checker can compare.

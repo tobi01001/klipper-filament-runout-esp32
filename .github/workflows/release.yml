@@ -1,0 +1,115 @@
+# ─── Automatic Firmware Release ───────────────────────────────────────────────
+# Triggers when a pull request is merged into the main branch.
+#
+# What it does:
+#   1. Reads the current FIRMWARE_VERSION from firmware/src/config.h
+#   2. Bumps the patch digit  (e.g. 1.0.3 → 1.0.4)
+#   3. Commits and pushes the version bump (tagged [skip ci] to break the loop)
+#   4. Builds the firmware with PlatformIO
+#   5. Creates a GitHub Release tagged v<new-version> with firmware.bin attached
+#
+# The "firmware.bin" asset is what the on-device GitHub OTA pull uses.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Build and Release Firmware
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    # Skip the version-bump commit that this workflow itself pushes.
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+
+    permissions:
+      contents: write  # needed to push the version bump and create the release
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── 2. Read and bump the firmware version ─────────────────────────────────
+      - name: Compute new version
+        id: version
+        run: |
+          CURRENT=$(grep -oP '(?<=#define FIRMWARE_VERSION  ")[^"]+' firmware/src/config.h)
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          NEW_PATCH=$(( PATCH + 1 ))
+          NEW="${MAJOR}.${MINOR}.${NEW_PATCH}"
+          echo "new=$NEW" >> "$GITHUB_OUTPUT"
+          echo "tag=v${NEW}" >> "$GITHUB_OUTPUT"
+          echo "Bumping $CURRENT → $NEW"
+
+      - name: Apply version bump in config.h
+        run: |
+          sed -i \
+            's/#define FIRMWARE_VERSION  ".*"/#define FIRMWARE_VERSION  "${{ steps.version.outputs.new }}"/' \
+            firmware/src/config.h
+          grep FIRMWARE_VERSION firmware/src/config.h
+
+      # ── 3. Cache PlatformIO packages ─────────────────────────────────────────
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            firmware/.pio
+          key: pio-${{ runner.os }}-${{ hashFiles('firmware/platformio.ini') }}
+          restore-keys: |
+            pio-${{ runner.os }}-
+
+      # ── 4. Build firmware ─────────────────────────────────────────────────────
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Build firmware
+        run: |
+          cd firmware
+          pio run -e esp32dev
+
+      # ── 5. Commit the version bump ────────────────────────────────────────────
+      - name: Commit and push version bump
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add firmware/src/config.h
+          git commit -m "chore: bump firmware version to ${{ steps.version.outputs.new }} [skip ci]"
+          git push
+
+      # ── 6. Create GitHub Release with firmware.bin ────────────────────────────
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "Firmware ${{ steps.version.outputs.tag }}"
+          body: |
+            ## Firmware ${{ steps.version.outputs.tag }}
+
+            Built automatically from [${{ github.sha }}](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}).
+
+            ### Installing
+
+            **Via web UI (GitHub OTA pull):**
+            Open `http://<sensor-ip>`, go to **Firmware Update**, click **Check for Updates**,
+            then confirm with **Apply Update**.
+
+            **Via PlatformIO / VS Code (ArduinoOTA push):**
+            ```bash
+            pio run -e esp32dev_ota -t upload --upload-port <device-ip-or-hostname>
+            ```
+          files: firmware/.pio/build/esp32dev/firmware.bin
+          token: ${{ secrets.GITHUB_TOKEN }}

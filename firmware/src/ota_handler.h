@@ -11,11 +11,14 @@
  *     Upload (or run `pio run -e esp32dev_ota -t upload`).  The device must be
  *     reachable on the local network and WiFi must be connected.
  *
- *  2. **GitHub Releases pull** – Call ota_github_update() (or POST /api/ota/update
- *     via the web UI) to have the device fetch the latest release from GitHub,
- *     compare the tag against FIRMWARE_VERSION, and flash the "firmware.bin"
- *     asset if a newer version is available.  The device reboots automatically
- *     after a successful flash.
+ *  2. **GitHub Releases pull** – Two-step process via the web UI:
+ *     a. Call ota_github_check_request() (or POST /api/ota/check) to fetch
+ *        release info and compare against FIRMWARE_VERSION.  Status becomes
+ *        "update-available" or "up-to-date".
+ *     b. When "update-available", the user confirms in the web UI and then
+ *        calls ota_github_update_request() (or POST /api/ota/update) to
+ *        download and flash the "firmware.bin" asset.  The device reboots
+ *        automatically after a successful flash.
  *
  * MIT License – Copyright (c) 2026 tobi01001
  */
@@ -42,13 +45,28 @@ void ota_init(const char *hostname, const char *password);
 void ota_handle();
 
 /**
- * @brief Request a GitHub-release OTA check and update.
+ * @brief Request a GitHub-release version check (no flashing).
+ *
+ * Non-blocking: schedules a FreeRTOS task that fetches the latest release info
+ * from GitHub and compares it with FIRMWARE_VERSION.  On completion the status
+ * is set to "update-available" or "up-to-date".  Repeated calls while a task
+ * is already running are ignored.
+ *
+ * Use this before calling ota_github_update_request() so the user can see
+ * what version is available and confirm before the actual flash.
+ */
+void ota_github_check_request();
+
+/**
+ * @brief Request a GitHub-release OTA check and update (flash + reboot).
  *
  * Non-blocking: schedules a FreeRTOS task that performs the actual
  * HTTP download and flashing in the background.  Repeated calls while
  * an update is already in progress are ignored.
  *
  * The device reboots automatically when the flash succeeds.
+ * Call this only after ota_github_check_request() has confirmed an update
+ * is available and the user has confirmed they want to proceed.
  */
 void ota_github_update_request();
 

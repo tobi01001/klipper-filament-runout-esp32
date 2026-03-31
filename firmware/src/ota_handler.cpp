@@ -48,6 +48,10 @@ static volatile bool        s_task_running   = false;
 // Mutex protecting s_latest_tag (written by OTA task, read by web handler task).
 static SemaphoreHandle_t    s_tag_mutex      = nullptr;
 
+// ─── Task mode ────────────────────────────────────────────────────────────────
+// When true the task only checks the latest release without flashing.
+static volatile bool        s_check_only     = false;
+
 // ─── Version comparison ────────────────────────────────────────────────────────
 /**
  * @brief Return true when @p tag represents a version newer than FIRMWARE_VERSION.
@@ -130,6 +134,16 @@ static void github_update_task(void * /*param*/) {
     if (!version_is_newer(tag)) {
         Serial.println("[OTA] Firmware is up-to-date");
         s_status = "up-to-date";
+        s_task_running = false;
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    // If this is a check-only request, report that an update is available
+    // and let the user confirm before flashing.
+    if (s_check_only) {
+        Serial.printf("[OTA] Update available: %s -> confirm via web UI to apply\n", tag);
+        s_status = "update-available";
         s_task_running = false;
         vTaskDelete(nullptr);
         return;
@@ -235,12 +249,37 @@ void ota_handle() {
     ArduinoOTA.handle();
 }
 
+void ota_github_check_request() {
+    if (s_task_running) {
+        Serial.println("[OTA] Task already running – check request ignored");
+        return;
+    }
+    s_task_running = true;
+    s_check_only   = true;
+
+    const BaseType_t ok = xTaskCreate(
+        github_update_task,
+        "OTA_Check",
+        12288,
+        nullptr,
+        2,
+        nullptr
+    );
+
+    if (ok != pdPASS) {
+        Serial.println("[OTA] Failed to create check task");
+        s_task_running = false;
+        s_status = "failed";
+    }
+}
+
 void ota_github_update_request() {
     if (s_task_running) {
         Serial.println("[OTA] Update already in progress – request ignored");
         return;
     }
     s_task_running = true;
+    s_check_only   = false;
 
     // Stack size 12288 bytes: TLS handshake (WiFiClientSecure) alone needs ~6 KB;
     // HTTPClient, JSON document, and HTTPUpdate consume the remainder.

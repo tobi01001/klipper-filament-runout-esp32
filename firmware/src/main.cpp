@@ -150,7 +150,23 @@ static void core0_task(void * /*param*/) {
     web_init(g_status_mutex, g_config_mutex, &g_status, &g_config);
 
     // ── Start ArduinoOTA (PlatformIO / VS Code push) ───────────────────────
-    ota_init(OTA_HOSTNAME, OTA_PASSWORD);
+    {
+        char ota_host[32];
+        char ota_pass[32];
+        if (xSemaphoreTake(g_config_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            strncpy(ota_host, g_config.ota_hostname, sizeof(ota_host) - 1);
+            ota_host[sizeof(ota_host) - 1] = '\0';
+            strncpy(ota_pass, g_config.ota_password, sizeof(ota_pass) - 1);
+            ota_pass[sizeof(ota_pass) - 1] = '\0';
+            xSemaphoreGive(g_config_mutex);
+        } else {
+            strncpy(ota_host, OTA_HOSTNAME, sizeof(ota_host) - 1);
+            ota_host[sizeof(ota_host) - 1] = '\0';
+            strncpy(ota_pass, OTA_PASSWORD, sizeof(ota_pass) - 1);
+            ota_pass[sizeof(ota_pass) - 1] = '\0';
+        }
+        ota_init(ota_host, ota_pass);
+    }
 
     // ── Main protocol loop ─────────────────────────────────────────────────
     TickType_t last_mr_poll = xTaskGetTickCount();
