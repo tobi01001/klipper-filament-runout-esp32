@@ -26,6 +26,7 @@ Moonraker API poll and a direct runout GPIO signal.
 | **NVS persistence** | All settings survive power cycles and firmware updates |
 | **WiFi AP fallback** | First-boot or credential-loss → AP mode for setup |
 | **Exponential backoff reconnect** | WiFi loss recovery ≤ 60 s |
+| **OLED display** (optional) | SSD1306 128×64 I²C; shows state, velocities, ticks, IP; blinks on FAULT |
 
 ---
 
@@ -43,13 +44,14 @@ esp32-filament-sensor/
 └── firmware/
     ├── platformio.ini
     └── src/
-        ├── config.h                 ← All pin & timing constants
+        ├── config.h                 ← All pin & timing constants + OLED flags
         ├── types.h                  ← Shared structs & state enum
         ├── encoder.h / .cpp         ← Quadrature ISR + 50 Hz Core 1 task
         ├── moonraker_client.h / .cpp← HTTP poll of extruder velocity
         ├── fault_detector.h / .cpp  ← State machine + GPIO 27 runout signal
         ├── nvs_config.h / .cpp      ← Preferences (NVS) load/save
         ├── web_handler.h / .cpp     ← Embedded SPA + REST API (port 80)
+        ├── display_handler.h / .cpp ← SSD1306 OLED driver (optional, #ifdef ENABLE_OLED)
         └── main.cpp                 ← Entry point, task creation
 ```
 
@@ -81,6 +83,8 @@ and open `http://192.168.4.1` to configure your network and Moonraker details.
 | 25 | Encoder Channel A | Input (pull-up) |
 | 26 | Encoder Channel B | Input (pull-up) |
 | 27 | Klipper runout (active LOW) | Output |
+| 21 | OLED SDA (optional) | I²C |
+| 22 | OLED SCL (optional) | I²C |
 
 All pins are configurable in `firmware/src/config.h`.
 
@@ -94,6 +98,7 @@ Navigate to `http://<sensor-ip>` for the live dashboard:
 - Encoder velocity bar + extruder velocity comparison
 - One-click **Reset Fault** button
 - Full configuration form (calibration, timeout, Moonraker, WiFi)
+- **Enable OLED display** toggle (persisted in NVS, no re-flash)
 
 ---
 
