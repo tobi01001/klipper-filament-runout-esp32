@@ -38,8 +38,43 @@ void display_init(SemaphoreHandle_t status_mutex,
  * When config->display_enabled is false the display is blanked (power-save
  * mode) and the function returns immediately on subsequent calls.
  *
+ * Skips rendering while an OTA update is active (see display_set_ota_active())
+ * so that OTA progress screens are not overwritten.
+ *
  * Call every OLED_UPDATE_MS (500 ms) from the Core 0 task loop.
  */
 void display_update();
+
+/**
+ * @brief Signal the display module that an OTA update is active or has ended.
+ *
+ * While @p active is true, display_update() skips its normal sensor render so
+ * that OTA progress screens are not overwritten.  Call with false when OTA ends
+ * (failure or cancellation) to resume normal display updates.  On a successful
+ * flash the device reboots so the flag need not be cleared.
+ *
+ * @param active  true when OTA starts; false when OTA ends without rebooting.
+ */
+void display_set_ota_active(bool active);
+
+/**
+ * @brief Render an OTA download progress bar on the display.
+ *
+ * Replaces the normal status screen with a centred progress bar and percentage
+ * label.  Call repeatedly from the OTA task or ArduinoOTA progress callback as
+ * each chunk is written; the display is redrawn on every call.
+ *
+ * @param percent  Download progress (0–100 %).
+ */
+void display_show_ota_progress(uint8_t percent);
+
+/**
+ * @brief Show an OTA-complete / rebooting message on the display.
+ *
+ * Replaces the progress screen with a static "OTA Complete – Rebooting…"
+ * notice.  Call once after a successful OTA write, immediately before the
+ * device reboots.
+ */
+void display_show_ota_reboot();
 
 #endif // ENABLE_OLED
