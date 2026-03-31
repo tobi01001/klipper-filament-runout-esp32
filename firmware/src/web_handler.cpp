@@ -123,7 +123,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
     <input type="text" id="wifi-pass" maxlength="63" placeholder="leave blank to keep current"/>
     <div class="toggle-row">
       <input type="checkbox" id="disp-en"/>
-      <label for="disp-en">Enable OLED display (SSD1306 128&#xD7;64)</label>
+      <label for="disp-en">Enable OLED display (SSD1306 128&#x00D7;64)</label>
     </div>
     <button class="btn-save" onclick="saveConfig()">&#x1F4BE; Save &amp; Apply</button>
     <div id="msg"></div>

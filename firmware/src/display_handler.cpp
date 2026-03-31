@@ -4,6 +4,7 @@
 
 #include <U8g2lib.h>
 #include <Wire.h>
+#include <math.h>
 #include <stdio.h>
 
 #include "config.h"
@@ -142,16 +143,18 @@ void display_update() {
     s_display.setFont(u8g2_font_6x10_tf);
     s_display.setDrawColor(1);
 
-    char buf[22];  // 128 / 6 = 21 chars max per line
+    char buf[24];  // 128 / 6 = 21 chars max per line + null + guard bytes
 
-    // Row 1 – encoder velocity
-    snprintf(buf, sizeof(buf), "Enc:%6.2f mm/s",
-             static_cast<double>(snap.encoder.velocity_mm_s));
+    // Row 1 – encoder velocity (clamped to ±9999.99 so format never exceeds buffer)
+    const float enc_vel_disp = fminf(fmaxf(snap.encoder.velocity_mm_s, -9999.99f), 9999.99f);
+    snprintf(buf, sizeof(buf), "Enc:%7.2f mm/s",
+             static_cast<double>(enc_vel_disp));
     s_display.drawStr(0, 28, buf);
 
-    // Row 2 – extruder velocity (Moonraker)
-    snprintf(buf, sizeof(buf), "Ext:%6.2f mm/s",
-             static_cast<double>(snap.extruder_vel));
+    // Row 2 – extruder velocity from Moonraker (clamped to ±9999.99)
+    const float ext_vel_disp = fminf(fmaxf(snap.extruder_vel, -9999.99f), 9999.99f);
+    snprintf(buf, sizeof(buf), "Ext:%7.2f mm/s",
+             static_cast<double>(ext_vel_disp));
     s_display.drawStr(0, 39, buf);
 
     // Row 3 – tick count + direction symbol
