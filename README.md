@@ -28,6 +28,7 @@ Moonraker API poll and a direct runout GPIO signal.
 | **Exponential backoff reconnect** | WiFi loss recovery ≤ 60 s |
 | **ArduinoOTA** | Push firmware directly from VS Code / PlatformIO over WiFi |
 | **GitHub Releases OTA** | Pull latest firmware from GitHub releases via the web UI |
+| **OLED display** (optional) | SSD1306 128×64 I²C; shows state, velocities, ticks, IP; blinks on FAULT |
 
 ---
 
@@ -45,7 +46,7 @@ esp32-filament-sensor/
 └── firmware/
     ├── platformio.ini
     └── src/
-        ├── config.h                 ← All pin & timing constants
+        ├── config.h                 ← All pin & timing constants + OLED flags
         ├── types.h                  ← Shared structs & state enum
         ├── encoder.h / .cpp         ← Quadrature ISR + 50 Hz Core 1 task
         ├── moonraker_client.h / .cpp← HTTP poll of extruder velocity
@@ -53,6 +54,7 @@ esp32-filament-sensor/
         ├── nvs_config.h / .cpp      ← Preferences (NVS) load/save
         ├── ota_handler.h / .cpp     ← ArduinoOTA + GitHub release OTA
         ├── web_handler.h / .cpp     ← Embedded SPA + REST API (port 80)
+        ├── display_handler.h / .cpp ← SSD1306 OLED driver (optional, #ifdef ENABLE_OLED)
         └── main.cpp                 ← Entry point, task creation
 ```
 
@@ -84,6 +86,8 @@ and open `http://192.168.4.1` to configure your network and Moonraker details.
 | 25 | Encoder Channel A | Input (pull-up) |
 | 26 | Encoder Channel B | Input (pull-up) |
 | 27 | Klipper runout (active LOW) | Output |
+| 21 | OLED SDA (optional) | I²C |
+| 22 | OLED SCL (optional) | I²C |
 
 All pins are configurable in `firmware/src/config.h`.
 
@@ -137,6 +141,7 @@ compiled-in `FIRMWARE_VERSION`, and – if a newer release is found – streams 
 2. Build: `pio run -e esp32dev`
 3. Upload `.pio/build/esp32dev/firmware.bin` as a release asset named
    **`firmware.bin`** to a new GitHub release tagged `v<version>` (e.g. `v1.1.0`).
+- **Enable OLED display** toggle (persisted in NVS, no re-flash)
 
 ---
 

@@ -36,6 +36,7 @@ struct SensorConfig {
     char     wifi_pass[64];          // Station password
     char     ota_hostname[32];       // ArduinoOTA mDNS hostname (default: "filament-sensor")
     char     ota_password[32];       // ArduinoOTA push password (default: "ota1234")
+    bool     display_enabled;        // Enable/disable the OLED display at runtime
 };
 
 // ─── Live Status (shared read by web handler) ─────────────────────────────────

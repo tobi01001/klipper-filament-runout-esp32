@@ -37,6 +37,7 @@
 #include "nvs_config.h"
 #include "web_handler.h"
 #include "ota_handler.h"
+#include "display_handler.h"
 
 // ─── Global shared state ──────────────────────────────────────────────────────
 static SensorConfig    g_config{};
@@ -167,11 +168,19 @@ static void core0_task(void * /*param*/) {
         }
         ota_init(ota_host, ota_pass);
     }
+#ifdef ENABLE_OLED
+    // ── Initialise OLED display (Core 0 only – I²C stays on one core) ─────
+    display_init(g_status_mutex, g_config_mutex, &g_status, &g_config);
+#endif
 
     // ── Main protocol loop ─────────────────────────────────────────────────
     TickType_t last_mr_poll = xTaskGetTickCount();
     TickType_t last_reconnect_check = xTaskGetTickCount();
     backoff_ms = 1000;
+
+#ifdef ENABLE_OLED
+    TickType_t last_display_update = xTaskGetTickCount();
+#endif
 
     while (true) {
         // Handle HTTP requests (non-blocking when no client pending)
@@ -179,6 +188,14 @@ static void core0_task(void * /*param*/) {
 
         // Service ArduinoOTA (PlatformIO / VS Code push)
         ota_handle();
+#ifdef ENABLE_OLED
+        // Refresh OLED display at OLED_UPDATE_MS rate
+        if ((xTaskGetTickCount() - last_display_update) >=
+            pdMS_TO_TICKS(OLED_UPDATE_MS)) {
+            last_display_update = xTaskGetTickCount();
+            display_update();
+        }
+#endif
 
         // Moonraker polling at 5 Hz
         if ((xTaskGetTickCount() - last_mr_poll) >= pdMS_TO_TICKS(MOONRAKER_POLL_MS)) {

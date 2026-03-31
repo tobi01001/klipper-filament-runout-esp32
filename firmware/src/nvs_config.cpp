@@ -28,6 +28,11 @@ void nvs_load(SensorConfig &cfg) {
         cfg.ota_hostname[sizeof(cfg.ota_hostname) - 1] = '\0';
         strncpy(cfg.ota_password, OTA_PASSWORD, sizeof(cfg.ota_password) - 1);
         cfg.ota_password[sizeof(cfg.ota_password) - 1] = '\0';
+#ifdef ENABLE_OLED
+        cfg.display_enabled  = OLED_DEFAULT_EN;
+#else
+        cfg.display_enabled  = false;
+#endif
         nvs_save(cfg);
         return;
     }
@@ -58,6 +63,11 @@ void nvs_load(SensorConfig &cfg) {
     String ota_pass = prefs.getString(NVS_KEY_OTA_PASS, OTA_PASSWORD);
     strncpy(cfg.ota_password, ota_pass.c_str(), sizeof(cfg.ota_password) - 1);
     cfg.ota_password[sizeof(cfg.ota_password) - 1] = '\0';
+#ifdef ENABLE_OLED
+    cfg.display_enabled = prefs.getBool(NVS_KEY_DISP_EN, OLED_DEFAULT_EN);
+#else
+    cfg.display_enabled = false;
+#endif
 
     prefs.end();
     Serial.println("[NVS] Configuration loaded from NVS");
@@ -80,6 +90,7 @@ void nvs_save(const SensorConfig &cfg) {
     prefs.putString(NVS_KEY_PASS,    cfg.wifi_pass);
     prefs.putString(NVS_KEY_OTA_HOST, cfg.ota_hostname);
     prefs.putString(NVS_KEY_OTA_PASS, cfg.ota_password);
+    prefs.putBool  (NVS_KEY_DISP_EN, cfg.display_enabled);
 
     prefs.end();
     Serial.println("[NVS] Configuration saved to NVS");
