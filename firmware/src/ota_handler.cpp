@@ -31,6 +31,7 @@
 
 #include "ota_handler.h"
 #include "config.h"
+#include "display_handler.h"
 
 #include <ArduinoOTA.h>
 #include <ArduinoJson.h>
@@ -180,6 +181,25 @@ static void github_update_task(void * /*param*/) {
     httpUpdate.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
     httpUpdate.rebootOnUpdate(true); // reboot automatically on success
 
+#ifdef ENABLE_OLED
+    // Show OTA progress screen before the download begins and hook into the
+    // HTTPUpdate progress callback so the bar advances with each written chunk.
+    display_set_ota_active(true);
+    display_show_ota_progress(0);
+
+    httpUpdate.onProgress([](int current, int total) {
+        if (total > 0) {
+            display_show_ota_progress(
+                (uint8_t)((uint32_t)current * 100u / (uint32_t)total));
+        }
+    });
+
+    // Called just before the library triggers esp_restart() on success.
+    httpUpdate.onEnd([]() {
+        display_show_ota_reboot();
+    });
+#endif
+
     const t_httpUpdate_return result =
         httpUpdate.update(fw_client, asset_url);
 
@@ -191,12 +211,18 @@ static void github_update_task(void * /*param*/) {
             break;
         case HTTP_UPDATE_NO_UPDATES:
             s_status = "up-to-date";
+#ifdef ENABLE_OLED
+            display_set_ota_active(false);
+#endif
             break;
         case HTTP_UPDATE_FAILED:
         default:
             Serial.printf("[OTA] Update failed: %s\n",
                           httpUpdate.getLastErrorString().c_str());
             s_status = "failed";
+#ifdef ENABLE_OLED
+            display_set_ota_active(false);
+#endif
             break;
     }
 
@@ -217,15 +243,26 @@ void ota_init(const char *hostname, const char *password) {
                                 : "filesystem";
         Serial.println("[OTA] ArduinoOTA start – type: " + type);
         s_status = "updating";
+#ifdef ENABLE_OLED
+        display_set_ota_active(true);
+        display_show_ota_progress(0);
+#endif
     });
 
     ArduinoOTA.onEnd([]() {
         Serial.println("\n[OTA] ArduinoOTA complete – rebooting");
         s_status = "ok";
+#ifdef ENABLE_OLED
+        display_show_ota_reboot();
+        // s_ota_active intentionally left true: device reboots immediately after.
+#endif
     });
 
     ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
         Serial.printf("[OTA] Progress: %u%%\r", progress * 100 / total);
+#ifdef ENABLE_OLED
+        display_show_ota_progress((uint8_t)(progress * 100 / total));
+#endif
     });
 
     ArduinoOTA.onError([](ota_error_t error) {
@@ -239,6 +276,9 @@ void ota_init(const char *hostname, const char *password) {
             default:                Serial.println("Unknown error");     break;
         }
         s_status = "failed";
+#ifdef ENABLE_OLED
+        display_set_ota_active(false);
+#endif
     });
 
     ArduinoOTA.begin();
@@ -257,13 +297,14 @@ void ota_github_check_request() {
     s_task_running = true;
     s_check_only   = true;
 
-    const BaseType_t ok = xTaskCreate(
+    const BaseType_t ok = xTaskCreatePinnedToCore(
         github_update_task,
         "OTA_Check",
         12288,
         nullptr,
         2,
-        nullptr
+        nullptr,
+        0   // Core 0: keeps I2C/display calls on the same core as the display driver
     );
 
     if (ok != pdPASS) {
@@ -284,13 +325,16 @@ void ota_github_update_request() {
     // Stack size 12288 bytes: TLS handshake (WiFiClientSecure) alone needs ~6 KB;
     // HTTPClient, JSON document, and HTTPUpdate consume the remainder.
     // Runs at priority 2, below the sensor tasks (5/10) so it cannot starve them.
-    const BaseType_t ok = xTaskCreate(
+    // Pinned to Core 0 so that I2C/display calls stay on the same core as the
+    // display driver (U8g2 hardware I2C is not safe across cores).
+    const BaseType_t ok = xTaskCreatePinnedToCore(
         github_update_task,
         "OTA_GitHub",
         12288,
         nullptr,
         2, // lower priority than protocol tasks
-        nullptr
+        nullptr,
+        0   // Core 0: keeps I2C/display calls on the same core as the display driver
     );
 
     if (ok != pdPASS) {

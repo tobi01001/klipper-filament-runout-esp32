@@ -26,6 +26,7 @@ static SensorConfig     *s_config       = nullptr;
 
 static bool s_initialized   = false;
 static bool s_power_save_on = false;  // tracks display power state
+static bool s_ota_active    = false;  // true while an OTA update is running
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
@@ -94,6 +95,12 @@ void display_init(SemaphoreHandle_t status_mutex,
 
 void display_update() {
     if (!s_initialized) {
+        return;
+    }
+
+    // Skip normal rendering while an OTA update is active so the progress
+    // screen is not overwritten by the sensor data layout.
+    if (s_ota_active) {
         return;
     }
 
@@ -173,6 +180,66 @@ void display_update() {
     }
     s_display.drawStr(0, 61, buf);
 
+    s_display.sendBuffer();
+}
+
+void display_set_ota_active(bool active) {
+    s_ota_active = active;
+}
+
+void display_show_ota_progress(uint8_t percent) {
+    if (!s_initialized) return;
+
+    const uint8_t pct = (percent > 100u) ? 100u : percent;
+
+    // Wake display if it was powered down.
+    if (s_power_save_on) {
+        s_display.setPowerSave(0);
+        s_power_save_on = false;
+    }
+
+    s_display.clearBuffer();
+
+    // Title bar
+    s_display.setFont(u8g2_font_8x13B_tf);
+    s_display.setDrawColor(1);
+    s_display.drawStr(20, 12, "OTA Update");
+    draw_separator(16);
+
+    // Percentage label
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%3u%%", pct);
+    s_display.drawStr(44, 36, buf);
+
+    // Progress bar – 120 px wide, 12 px tall, 4 px from each edge
+    const uint8_t bar_x = 4;
+    const uint8_t bar_y = 42;
+    const uint8_t bar_w = OLED_WIDTH - 8;
+    const uint8_t bar_h = 12;
+    s_display.drawFrame(bar_x, bar_y, bar_w, bar_h);
+    if (pct > 0u) {
+        const uint8_t fill_w = (uint8_t)(bar_w * pct / 100u);
+        s_display.drawBox(bar_x, bar_y, fill_w, bar_h);
+    }
+
+    s_display.sendBuffer();
+}
+
+void display_show_ota_reboot() {
+    if (!s_initialized) return;
+
+    // Wake display if it was powered down.
+    if (s_power_save_on) {
+        s_display.setPowerSave(0);
+        s_power_save_on = false;
+    }
+
+    s_display.clearBuffer();
+    s_display.setFont(u8g2_font_8x13B_tf);
+    s_display.setDrawColor(1);
+    s_display.drawStr(14, 24, "OTA Complete");
+    s_display.setFont(u8g2_font_6x10_tf);
+    s_display.drawStr(22, 44, "Rebooting...");
     s_display.sendBuffer();
 }
 
