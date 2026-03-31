@@ -34,6 +34,8 @@ struct SensorConfig {
     uint16_t moonraker_port;         // Moonraker port (default 7125)
     char     wifi_ssid[64];          // Station SSID
     char     wifi_pass[64];          // Station password
+    char     ota_hostname[32];       // ArduinoOTA mDNS hostname (default: "filament-sensor")
+    char     ota_password[32];       // ArduinoOTA push password (default: "ota1234")
     bool     display_enabled;        // Enable/disable the OLED display at runtime
 };
 

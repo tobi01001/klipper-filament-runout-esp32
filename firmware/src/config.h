@@ -96,4 +96,30 @@
 #define NVS_KEY_MR_PORT  "mr_port"
 #define NVS_KEY_SSID     "wifi_ssid"
 #define NVS_KEY_PASS     "wifi_pass"
+#define NVS_KEY_OTA_HOST "ota_hostname"
+#define NVS_KEY_OTA_PASS "ota_password"
+
+// ─── Firmware Version ─────────────────────────────────────────────────────────
+// Bump this when cutting a new GitHub release so the OTA checker can compare.
+#define FIRMWARE_VERSION  "1.0.0"
+
+// ─── OTA (Over-The-Air Update) ────────────────────────────────────────────────
+// mDNS hostname advertised by ArduinoOTA; reachable as <OTA_HOSTNAME>.local on
+// the local network once mDNS is working.
+#define OTA_HOSTNAME     "filament-sensor"
+
+// Password required for the espota push protocol (PlatformIO / VS Code upload).
+// Change this to something unique before deploying in a shared network.
+#define OTA_PASSWORD     "ota1234"
+
+// GitHub repository for the automatic update check.
+// The OTA handler calls the GitHub Releases API, compares the latest tag_name
+// with FIRMWARE_VERSION, and – if newer – streams the "firmware.bin" asset
+// through HTTPUpdate to the inactive OTA partition.
+#define GITHUB_OWNER     "tobi01001"
+#define GITHUB_REPO      "klipper-filament-runout-esp32"
+#define GITHUB_API_URL   "https://api.github.com/repos/" GITHUB_OWNER "/" GITHUB_REPO "/releases/latest"
+
+// Maximum time to wait for the GitHub API or asset download (ms).
+#define OTA_HTTP_TIMEOUT_MS  20000
 #define NVS_KEY_DISP_EN  "disp_en"
