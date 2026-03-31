@@ -24,6 +24,11 @@ void nvs_load(SensorConfig &cfg) {
         cfg.moonraker_port   = DEFAULT_MOONRAKER_PORT;
         cfg.wifi_ssid[0]     = '\0';
         cfg.wifi_pass[0]     = '\0';
+#ifdef ENABLE_OLED
+        cfg.display_enabled  = OLED_DEFAULT_EN;
+#else
+        cfg.display_enabled  = false;
+#endif
         nvs_save(cfg);
         return;
     }
@@ -47,6 +52,12 @@ void nvs_load(SensorConfig &cfg) {
     strncpy(cfg.wifi_pass, pass.c_str(), sizeof(cfg.wifi_pass) - 1);
     cfg.wifi_pass[sizeof(cfg.wifi_pass) - 1] = '\0';
 
+#ifdef ENABLE_OLED
+    cfg.display_enabled = prefs.getBool(NVS_KEY_DISP_EN, OLED_DEFAULT_EN);
+#else
+    cfg.display_enabled = false;
+#endif
+
     prefs.end();
     Serial.println("[NVS] Configuration loaded from NVS");
 }
@@ -66,6 +77,7 @@ void nvs_save(const SensorConfig &cfg) {
     prefs.putString(NVS_KEY_MR_IP,   cfg.moonraker_ip);
     prefs.putString(NVS_KEY_SSID,    cfg.wifi_ssid);
     prefs.putString(NVS_KEY_PASS,    cfg.wifi_pass);
+    prefs.putBool  (NVS_KEY_DISP_EN, cfg.display_enabled);
 
     prefs.end();
     Serial.println("[NVS] Configuration saved to NVS");

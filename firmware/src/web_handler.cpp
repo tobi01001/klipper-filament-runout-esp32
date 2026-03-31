@@ -59,6 +59,9 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
              overflow:hidden}
     .vel-bar-inner{height:100%;background:#06f;border-radius:4px;
                    transition:width .3s}
+    .toggle-row{display:flex;align-items:center;gap:10px;margin:8px 0 2px}
+    .toggle-row label{margin:0;flex:1}
+    input[type=checkbox]{width:18px;height:18px;accent-color:#06f;cursor:pointer}
   </style>
 </head>
 <body>
@@ -118,6 +121,10 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
     <input type="text" id="wifi-ssid" maxlength="63"/>
     <label>WiFi Password</label>
     <input type="text" id="wifi-pass" maxlength="63" placeholder="leave blank to keep current"/>
+    <div class="toggle-row">
+      <input type="checkbox" id="disp-en"/>
+      <label for="disp-en">Enable OLED display (SSD1306 128&#xD7;64)</label>
+    </div>
     <button class="btn-save" onclick="saveConfig()">&#x1F4BE; Save &amp; Apply</button>
     <div id="msg"></div>
   </div>
@@ -166,6 +173,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
           document.getElementById('mr-ip').value      = d.moonraker_ip;
           document.getElementById('mr-port').value    = d.moonraker_port;
           document.getElementById('wifi-ssid').value  = d.wifi_ssid;
+          document.getElementById('disp-en').checked  = d.display_enabled;
           maxVel = Math.max(10, d.min_ext_vel * 20);
         }).catch(()=>{});
     }
@@ -180,6 +188,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
         moonraker_port:   parseInt(document.getElementById('mr-port').value),
         wifi_ssid:        document.getElementById('wifi-ssid').value,
         wifi_pass:        document.getElementById('wifi-pass').value,
+        display_enabled:  document.getElementById('disp-en').checked,
       };
       fetch('/api/config', {method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify(body)})
@@ -255,6 +264,7 @@ static void handle_get_config() {
     doc["moonraker_ip"]     = snap.moonraker_ip;
     doc["moonraker_port"]   = snap.moonraker_port;
     doc["wifi_ssid"]        = snap.wifi_ssid;
+    doc["display_enabled"]  = snap.display_enabled;
 
     String out;
     serializeJson(doc, out);
@@ -305,6 +315,9 @@ static void handle_post_config() {
                     sizeof(s_config->wifi_pass) - 1);
             s_config->wifi_pass[sizeof(s_config->wifi_pass) - 1] = '\0';
         }
+
+        if (doc["display_enabled"].is<bool>())
+            s_config->display_enabled = doc["display_enabled"].as<bool>();
 
         nvs_save(*s_config);
         xSemaphoreGive(s_config_mutex);

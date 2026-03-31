@@ -7,8 +7,31 @@
                                // GPIO 32/33 support INPUT_PULLUP; 34-39 do NOT.
 #define PIN_RUNOUT        27   // Runout output to Klipper filament sensor (active LOW)
 
+// ─── OLED Display (SSD1306, 128×64, I²C) ─────────────────────────────────────
+// Comment out ENABLE_OLED to exclude all display code at compile time.
+// When enabled the display shows live state, encoder velocity, extruder velocity,
+// tick count, and the sensor IP address.  The display can also be toggled at
+// runtime via the web interface without re-flashing.
+#define ENABLE_OLED
+
+#ifdef ENABLE_OLED
+#define OLED_SDA_PIN    21        // I²C SDA (default ESP32 hardware I²C)
+#define OLED_SCL_PIN    22        // I²C SCL (default ESP32 hardware I²C)
+#define OLED_I2C_ADDR   0x3C      // SSD1306 I²C address: 0x3C or 0x3D
+#define OLED_WIDTH      128       // Display width in pixels
+#define OLED_HEIGHT     64        // Display height in pixels
+#define OLED_UPDATE_MS  500UL     // Display refresh period (2 Hz)
+#define OLED_DEFAULT_EN true      // Enable display by default on first boot
+#endif
+
 // ─── FreeRTOS / Task Configuration ───────────────────────────────────────────
+#ifdef ENABLE_OLED
+// U8g2 full-buffer mode allocates 1 kB on the heap, but its rendering helpers
+// need a bit more stack headroom.  Bump Core 0 stack to 10 kB when OLED is on.
+#define CORE0_TASK_STACK  10240 // bytes – protocol core + OLED driver headroom
+#else
 #define CORE0_TASK_STACK  8192  // bytes – protocol core (WiFi, HTTP, fault detect)
+#endif
 #define CORE1_TASK_STACK  4096  // bytes – real-time core (encoder ISR, speed calc)
 #define CORE0_TASK_PRIO   5     // FreeRTOS priority
 #define CORE1_TASK_PRIO   10    // Higher priority → lower ISR latency
@@ -73,3 +96,4 @@
 #define NVS_KEY_MR_PORT  "mr_port"
 #define NVS_KEY_SSID     "wifi_ssid"
 #define NVS_KEY_PASS     "wifi_pass"
+#define NVS_KEY_DISP_EN  "disp_en"

@@ -34,6 +34,7 @@ struct SensorConfig {
     uint16_t moonraker_port;         // Moonraker port (default 7125)
     char     wifi_ssid[64];          // Station SSID
     char     wifi_pass[64];          // Station password
+    bool     display_enabled;        // Enable/disable the OLED display at runtime
 };
 
 // ─── Live Status (shared read by web handler) ─────────────────────────────────
