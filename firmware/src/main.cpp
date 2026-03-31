@@ -36,6 +36,7 @@
 #include "fault_detector.h"
 #include "nvs_config.h"
 #include "web_handler.h"
+#include "ota_handler.h"
 
 // ─── Global shared state ──────────────────────────────────────────────────────
 static SensorConfig    g_config{};
@@ -148,6 +149,9 @@ static void core0_task(void * /*param*/) {
     // ── Start web server ───────────────────────────────────────────────────
     web_init(g_status_mutex, g_config_mutex, &g_status, &g_config);
 
+    // ── Start ArduinoOTA (PlatformIO / VS Code push) ───────────────────────
+    ota_init(OTA_HOSTNAME, OTA_PASSWORD);
+
     // ── Main protocol loop ─────────────────────────────────────────────────
     TickType_t last_mr_poll = xTaskGetTickCount();
     TickType_t last_reconnect_check = xTaskGetTickCount();
@@ -156,6 +160,9 @@ static void core0_task(void * /*param*/) {
     while (true) {
         // Handle HTTP requests (non-blocking when no client pending)
         web_handle_client();
+
+        // Service ArduinoOTA (PlatformIO / VS Code push)
+        ota_handle();
 
         // Moonraker polling at 5 Hz
         if ((xTaskGetTickCount() - last_mr_poll) >= pdMS_TO_TICKS(MOONRAKER_POLL_MS)) {

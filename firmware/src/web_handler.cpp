@@ -1,6 +1,7 @@
 #include "web_handler.h"
 #include "fault_detector.h"
 #include "nvs_config.h"
+#include "ota_handler.h"
 #include "config.h"
 
 #include <Arduino.h>
@@ -122,6 +123,19 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
     <div id="msg"></div>
   </div>
 
+  <!-- OTA Update Card -->
+  <div class="card">
+    <h2>Firmware Update</h2>
+    <table>
+      <tr><td>Installed version</td><td id="ota-ver">-</td></tr>
+      <tr><td>Latest release</td>   <td id="ota-latest">-</td></tr>
+      <tr><td>Status</td>           <td id="ota-status">-</td></tr>
+    </table>
+    <button class="btn-save" onclick="triggerOtaUpdate()" style="margin-top:10px">
+      &#x2B06; Check &amp; Update from GitHub
+    </button>
+  </div>
+
   <script>
     let maxVel = 10;
 
@@ -195,6 +209,27 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
         .catch(()=>showMsg('✗ Request failed', false));
     }
 
+    function loadOta() {
+      fetch('/api/ota')
+        .then(r=>r.json())
+        .then(d=>{
+          document.getElementById('ota-ver').textContent    = d.version;
+          document.getElementById('ota-latest').textContent = d.latest_tag || '—';
+          document.getElementById('ota-status').textContent = d.status;
+        }).catch(()=>{});
+    }
+
+    function triggerOtaUpdate() {
+      document.getElementById('ota-status').textContent = 'requesting…';
+      fetch('/api/ota/update', {method:'POST'})
+        .then(r=>r.json())
+        .then(d=>{
+          if (!d.ok) document.getElementById('ota-status').textContent = '✗ '+d.error;
+          else document.getElementById('ota-status').textContent = 'checking…';
+        })
+        .catch(()=>{ document.getElementById('ota-status').textContent = '✗ Request failed'; });
+    }
+
     function showMsg(text, ok) {
       const m = document.getElementById('msg');
       m.textContent  = text;
@@ -203,8 +238,10 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
     }
 
     loadConfig();
+    loadOta();
     refresh();
     setInterval(refresh, 1000);
+    setInterval(loadOta, 5000);
   </script>
 </body>
 </html>
@@ -322,6 +359,22 @@ static void handle_reset() {
     s_server.send(200, "application/json", "{\"ok\":true}");
 }
 
+static void handle_ota_get() {
+    JsonDocument doc;
+    doc["version"]    = FIRMWARE_VERSION;
+    doc["latest_tag"] = ota_get_latest_tag();
+    doc["status"]     = ota_get_status();
+
+    String out;
+    serializeJson(doc, out);
+    s_server.send(200, "application/json", out);
+}
+
+static void handle_ota_update() {
+    ota_github_update_request();
+    s_server.send(200, "application/json", "{\"ok\":true}");
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 void web_init(SemaphoreHandle_t status_mutex,
               SemaphoreHandle_t config_mutex,
@@ -332,11 +385,13 @@ void web_init(SemaphoreHandle_t status_mutex,
     s_status       = status;
     s_config       = config;
 
-    s_server.on("/",           HTTP_GET,  handle_root);
-    s_server.on("/api/status", HTTP_GET,  handle_status);
-    s_server.on("/api/config", HTTP_GET,  handle_get_config);
-    s_server.on("/api/config", HTTP_POST, handle_post_config);
-    s_server.on("/api/reset",  HTTP_POST, handle_reset);
+    s_server.on("/",               HTTP_GET,  handle_root);
+    s_server.on("/api/status",     HTTP_GET,  handle_status);
+    s_server.on("/api/config",     HTTP_GET,  handle_get_config);
+    s_server.on("/api/config",     HTTP_POST, handle_post_config);
+    s_server.on("/api/reset",      HTTP_POST, handle_reset);
+    s_server.on("/api/ota",        HTTP_GET,  handle_ota_get);
+    s_server.on("/api/ota/update", HTTP_POST, handle_ota_update);
 
     s_server.begin();
     Serial.println("[WEB] HTTP server started on port " + String(WEB_SERVER_PORT));
