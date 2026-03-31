@@ -3,6 +3,8 @@
 // ─── GPIO Pin Assignments ─────────────────────────────────────────────────────
 #define PIN_ENCODER_CHA   25   // Quadrature encoder Channel A (rising + falling)
 #define PIN_ENCODER_CHB   26   // Quadrature encoder Channel B (rising + falling)
+#define PIN_ENCODER_BTN   32   // Encoder push-button (active LOW, internal pull-up)
+                               // GPIO 32/33 support INPUT_PULLUP; 34-39 do NOT.
 #define PIN_RUNOUT        27   // Runout output to Klipper filament sensor (active LOW)
 
 // ─── FreeRTOS / Task Configuration ───────────────────────────────────────────
@@ -18,7 +20,26 @@
 #define CORE0_LOOP_MS      10UL   // Core 0 main loop tick (100 Hz)
 
 // ─── Default Runtime Values (overridden by NVS on boot) ──────────────────────
-#define DEFAULT_CAL_FACTOR     0.01f        // mm per encoder tick
+//
+// ─── Wheel diameter & ticks-per-revolution → cal_factor ─────────────────────
+// The quadrature decoder counts 4 electrical edges per mechanical pulse.
+// If your encoder has N detents per revolution and P pulses per detent:
+//   ENCODER_TICKS_PER_REV = N * P * 4   (full quadrature, both edges, both channels)
+//
+// IMPORTANT: verify ENCODER_TICKS_PER_REV by watching the serial output:
+//   Hold the filament still, rotate the wheel exactly one full revolution slowly,
+//   then read the accumulated tick_count change. That number is your true value.
+//
+// Typical cheap 20-detent encoders, 1 pulse/detent, full quadrature → 80 ticks/rev.
+// If yours shows 20 ticks/rev in practice, it uses half-quad internally → use 20.
+//
+#define ENCODER_WHEEL_DIAM_MM   10.0f   // Pinch wheel outer diameter in mm
+#define ENCODER_TICKS_PER_REV   70      // Measured ticks for one full revolution
+                                        // (detents × pulses/detent × 4 for full-quad)
+                                        // Common: 20 detents × 1 pulse × 4 = 80
+                                        //         20 detents × 1 pulse × 1 = 20 (half-quad)
+#define DEFAULT_CAL_FACTOR  (M_PI * ENCODER_WHEEL_DIAM_MM / ENCODER_TICKS_PER_REV)
+// With defaults above: (π × 10) / 80 ≈ 0.3927 mm/tick
 #define DEFAULT_TIMEOUT_MS     2000UL       // ms of no filament motion → fault
 #define DEFAULT_MIN_EXT_VEL    0.5f         // mm/s extruder velocity → "printing"
 #define DEFAULT_MOTION_THRESH  1            // minimum |ticks| to count as motion
@@ -38,7 +59,8 @@
 #define WEB_SERVER_PORT  80
 
 // ─── Serial Debug ─────────────────────────────────────────────────────────────
-#define SERIAL_BAUD  115200
+#define SERIAL_BAUD                115200
+
 
 // ─── NVS Namespace & Keys ────────────────────────────────────────────────────
 // NVS namespace and key names are limited to 15 characters.

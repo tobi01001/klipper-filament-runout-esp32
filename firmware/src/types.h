@@ -21,6 +21,7 @@ struct EncoderData {
     int8_t   direction;        // +1 forward, -1 reverse, 0 stopped
     uint32_t timestamp_ms;     // millis() at time of snapshot
     float    velocity_mm_s;    // EMA-filtered filament velocity (mm/s)
+    bool     btn_pressed;      // Encoder push-button active (debounced, active LOW)
 };
 
 // ─── Persistent Runtime Configuration (NVS) ──────────────────────────────────

@@ -51,6 +51,7 @@ void encoder_init(QueueHandle_t queue, const SensorConfig *cfg) {
 
     pinMode(PIN_ENCODER_CHA, INPUT_PULLUP);
     pinMode(PIN_ENCODER_CHB, INPUT_PULLUP);
+    pinMode(PIN_ENCODER_BTN, INPUT_PULLUP);
 
     // Capture initial state so first ISR transition is interpreted correctly
     const uint8_t chA  = static_cast<uint8_t>(digitalRead(PIN_ENCODER_CHA));
@@ -60,14 +61,20 @@ void encoder_init(QueueHandle_t queue, const SensorConfig *cfg) {
     attachInterrupt(digitalPinToInterrupt(PIN_ENCODER_CHA), encoder_isr, CHANGE);
     attachInterrupt(digitalPinToInterrupt(PIN_ENCODER_CHB), encoder_isr, CHANGE);
 
-    Serial.println("[ENC] Encoder initialised (ChA=" + String(PIN_ENCODER_CHA) +
-                   ", ChB=" + String(PIN_ENCODER_CHB) + ")");
+    Serial.printf("[ENC] Encoder initialised (ChA=%d, ChB=%d, Btn=%d)\n",
+                  PIN_ENCODER_CHA, PIN_ENCODER_CHB, PIN_ENCODER_BTN);
 }
 
 void encoder_task(void * /*param*/) {
     int32_t  last_ticks  = 0;
     uint32_t last_time   = millis();
     float    vel_ema     = 0.0f;
+
+    // Button debounce state (task-level, not ISR)
+    uint8_t  btn_history  = 0xFF;  // shift register; all-high → not pressed
+    bool     btn_state    = false;
+    int32_t  last_reported_ticks = 0;
+    bool     last_reported_btn   = false;
 
     TickType_t last_wake = xTaskGetTickCount();
 
@@ -98,6 +105,15 @@ void encoder_task(void * /*param*/) {
                                  (static_cast<float>(dt_ms) / 1000.0f);
         vel_ema = EMA_ALPHA * raw_vel + (1.0f - EMA_ALPHA) * vel_ema;
 
+        // Button debounce: shift in current reading; stable only when all 8 bits agree
+        btn_history = static_cast<uint8_t>((btn_history << 1) |
+                      (digitalRead(PIN_ENCODER_BTN) == LOW ? 1 : 0));
+        if (btn_history == 0xFF) {
+            btn_state = true;   // 8 consecutive LOW readings → pressed
+        } else if (btn_history == 0x00) {
+            btn_state = false;  // 8 consecutive HIGH readings → released
+        }
+
         // Push latest state to single-slot queue (overwrites previous if unread)
         EncoderData data;
         data.tick_count    = ticks;
@@ -105,9 +121,21 @@ void encoder_task(void * /*param*/) {
         data.direction     = dir;
         data.timestamp_ms  = now_ms;
         data.velocity_mm_s = vel_ema;
+        data.btn_pressed   = btn_state;
 
         if (s_queue != nullptr) {
             xQueueOverwrite(s_queue, &data);
+        }
+
+        // Event-driven serial debug output
+        if ((ticks != last_reported_ticks) || (btn_state != last_reported_btn)) {
+            last_reported_ticks = ticks;
+            last_reported_btn   = btn_state;
+            const char *dir_str = (dir > 0) ? "FWD" : (dir < 0) ? "REV" : "---";
+            Serial.printf("[ENC] ticks=%7ld  delta=%+4ld  dir=%s  "
+                          "vel=%+7.2f mm/s  btn=%s\n",
+                          (long)ticks, (long)delta, dir_str,
+                          vel_ema, btn_state ? "PRESS" : "open");
         }
     }
 }

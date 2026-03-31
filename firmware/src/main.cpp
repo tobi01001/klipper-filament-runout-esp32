@@ -46,33 +46,50 @@ static SemaphoreHandle_t g_status_mutex = nullptr;
 static SemaphoreHandle_t g_config_mutex = nullptr;
 
 // ─── WiFi helpers (Core 0) ────────────────────────────────────────────────────
-static bool wifi_connect(const SensorConfig &cfg) {
+static bool wifi_connect(const SensorConfig &cfg, uint32_t timeout_ms) {
     if (cfg.wifi_ssid[0] == '\0') {
         Serial.println("[WiFi] No SSID configured – starting AP mode");
         return false;
     }
 
     Serial.printf("[WiFi] Connecting to '%s' …\n", cfg.wifi_ssid);
+
+    // Force a fresh STA attempt so stale driver state does not short-circuit.
+    WiFi.persistent(false);
+    WiFi.setAutoReconnect(true);
+    WiFi.disconnect(/*wifioff=*/false, /*eraseap=*/false);
+    vTaskDelay(pdMS_TO_TICKS(100));
     WiFi.mode(WIFI_STA);
     WiFi.begin(cfg.wifi_ssid, cfg.wifi_pass);
 
-    const uint32_t deadline = millis() + WIFI_CONNECT_TIMEOUT_MS;
-    while (WiFi.status() != WL_CONNECTED && millis() < deadline) {
+    const uint32_t start_ms = millis();
+    while (WiFi.status() != WL_CONNECTED &&
+           (uint32_t)(millis() - start_ms) < timeout_ms) {
+        Serial.print(".");
         vTaskDelay(pdMS_TO_TICKS(500));
     }
+    Serial.println();
 
     if (WiFi.status() == WL_CONNECTED) {
         Serial.printf("[WiFi] Connected, IP: %s\n", WiFi.localIP().toString().c_str());
         return true;
     }
 
-    Serial.println("[WiFi] Connection timeout");
+    Serial.printf("[WiFi] Connection failed (status=%d)\n", (int)WiFi.status());
     return false;
 }
 
 static void wifi_start_ap() {
-    WiFi.mode(WIFI_AP);
-    WiFi.softAP(WIFI_AP_SSID, WIFI_AP_PASS);
+    Serial.println("[WiFi] Starting Access Point mode …");
+
+    // Keep STA active so periodic retries can run while AP config stays available.
+    WiFi.mode(WIFI_AP_STA);
+    const bool ap_ok = WiFi.softAP(WIFI_AP_SSID, WIFI_AP_PASS);
+    if (!ap_ok) {
+        Serial.println("[WiFi] ERROR: Failed to start AP mode");
+        return;
+    }
+
     Serial.printf("[WiFi] AP mode – SSID: %s  IP: %s\n",
                   WIFI_AP_SSID,
                   WiFi.softAPIP().toString().c_str());
@@ -85,7 +102,7 @@ static void core0_task(void * /*param*/) {
     // ── WiFi connection with exponential backoff ───────────────────────────
     uint32_t backoff_ms = 1000;
     bool connected = false;
-
+    Serial.println("[WiFi] Connecting to WiFi …");
     {
         if (xSemaphoreTake(g_status_mutex, portMAX_DELAY) == pdTRUE) {
             g_status.state = SystemState::WIFI_CONN;
@@ -98,13 +115,15 @@ static void core0_task(void * /*param*/) {
             xSemaphoreGive(g_config_mutex);
         }
 
-        connected = wifi_connect(cfg_snap);
+        connected = wifi_connect(cfg_snap, WIFI_CONNECT_TIMEOUT_MS);
 
         if (!connected) {
+            Serial.println("[WiFi] Failed to connect in station mode, switching to AP mode");
             if (xSemaphoreTake(g_status_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
                 g_status.state = SystemState::WIFI_FAIL;
                 xSemaphoreGive(g_status_mutex);
             }
+            Serial.println("[WiFi] Starting AP mode for configuration …");
             wifi_start_ap();
             // AP mode still allows web-based configuration
             connected = true; // Web server works over AP too
@@ -157,8 +176,7 @@ static void core0_task(void * /*param*/) {
             pdMS_TO_TICKS(backoff_ms)) {
             last_reconnect_check = xTaskGetTickCount();
 
-            if (WiFi.getMode() == WIFI_STA &&
-                WiFi.status() != WL_CONNECTED) {
+            if (WiFi.status() != WL_CONNECTED) {
                 Serial.printf("[WiFi] Reconnecting (backoff %lu ms) …\n",
                               backoff_ms);
 
@@ -168,12 +186,14 @@ static void core0_task(void * /*param*/) {
                     xSemaphoreGive(g_config_mutex);
                 }
 
-                if (wifi_connect(cfg_snap)) {
+                // Keep retry attempts short so web/AP servicing does not stall.
+                if (wifi_connect(cfg_snap, 5000UL)) {
                     backoff_ms = 1000; // Reset backoff on success
                     String new_ip = WiFi.localIP().toString();
                     if (xSemaphoreTake(g_status_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
                         strncpy(g_status.ip_address, new_ip.c_str(),
                                 sizeof(g_status.ip_address) - 1);
+                        g_status.ip_address[sizeof(g_status.ip_address) - 1] = '\0';
                         g_status.wifi_connected = true;
                         xSemaphoreGive(g_status_mutex);
                     }
@@ -183,6 +203,11 @@ static void core0_task(void * /*param*/) {
                     if (xSemaphoreTake(g_status_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
                         g_status.wifi_connected = false;
                         xSemaphoreGive(g_status_mutex);
+                    }
+
+                    // Ensure AP is available for configuration when STA is down.
+                    if (!(WiFi.getMode() & WIFI_AP)) {
+                        wifi_start_ap();
                     }
                 }
             }
