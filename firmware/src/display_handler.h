@@ -41,7 +41,8 @@ void display_init(SemaphoreHandle_t status_mutex,
  * Skips rendering while an OTA update is active (see display_set_ota_active())
  * so that OTA progress screens are not overwritten.
  *
- * Call every OLED_UPDATE_MS (500 ms) from the Core 0 task loop.
+ * Call every OLED_UPDATE_MS (100 ms) from the Core 0 task loop.
+ * The module redraws only when displayed values change.
  */
 void display_update();
 

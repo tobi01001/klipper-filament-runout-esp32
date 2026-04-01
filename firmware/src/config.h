@@ -20,7 +20,7 @@
 #define OLED_I2C_ADDR   0x3C      // SSD1306 I²C address: 0x3C or 0x3D
 #define OLED_WIDTH      128       // Display width in pixels
 #define OLED_HEIGHT     64        // Display height in pixels
-#define OLED_UPDATE_MS  500UL     // Display refresh period (2 Hz)
+#define OLED_UPDATE_MS  100UL     // Display refresh period
 #define OLED_DEFAULT_EN true      // Enable display by default on first boot
 #endif
 
@@ -39,6 +39,9 @@
 
 // ─── Timing Constants ─────────────────────────────────────────────────────────
 #define ENCODER_UPDATE_MS  20UL   // Core 1 speed calc period (50 Hz)
+#define ENCODER_ISR_DEBOUNCE_US 120UL // Ignore edges closer than this (mechanical bounce guard)
+#define ENCODER_USE_PULSE_SERVICE false // true: count GPIO25 pulses only (speed-focused, no reverse direction)
+#define ENCODER_USE_FULL_STEP false // true: robust full-step decode, false: x4 edge decode
 #define MOONRAKER_POLL_MS  200UL  // Core 0 Moonraker poll period (5 Hz)
 #define CORE0_LOOP_MS      10UL   // Core 0 main loop tick (100 Hz)
 

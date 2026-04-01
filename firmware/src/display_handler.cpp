@@ -6,6 +6,7 @@
 #include <Wire.h>
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "config.h"
 #include "fault_detector.h"  // state_name()
@@ -27,6 +28,9 @@ static SensorConfig     *s_config       = nullptr;
 static bool s_initialized   = false;
 static bool s_power_save_on = false;  // tracks display power state
 static bool s_ota_active    = false;  // true while an OTA update is running
+static bool s_have_last     = false;
+static SensorStatus s_last_status{};
+static bool s_last_enabled  = true;
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
@@ -55,6 +59,20 @@ static void draw_title(const char *label, bool fault, bool blink_phase) {
         s_display.setDrawColor(1);
         s_display.drawStr(2, 12, label);
     }
+}
+
+static bool status_changed(const SensorStatus &a, const SensorStatus &b) {
+    if (a.state != b.state) return true;
+    if (a.fault_active != b.fault_active) return true;
+    if (a.wifi_connected != b.wifi_connected) return true;
+    if (strncmp(a.ip_address, b.ip_address, sizeof(a.ip_address)) != 0) return true;
+
+    if (a.encoder.tick_count != b.encoder.tick_count) return true;
+    if (a.encoder.direction != b.encoder.direction) return true;
+    if (fabsf(a.encoder.velocity_mm_s - b.encoder.velocity_mm_s) >= 0.01f) return true;
+    if (fabsf(a.extruder_vel - b.extruder_vel) >= 0.01f) return true;
+
+    return false;
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -126,22 +144,30 @@ void display_update() {
 
     // ── Snapshot status (brief mutex hold) ───────────────────────────────────
     SensorStatus snap{};
+    bool have_snap = false;
     if (xSemaphoreTake(s_status_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
         snap = *s_status;
         xSemaphoreGive(s_status_mutex);
+        have_snap = true;
+    }
+
+    // Never render a zero-initialized snapshot on transient mutex contention.
+    if (!have_snap) {
+        return;
+    }
+
+    // Update at 100 ms cadence but only redraw when something visible changed.
+    if (s_have_last && s_last_enabled == enabled && !status_changed(snap, s_last_status)) {
+        return;
     }
 
     const bool is_fault = (snap.state == SystemState::FAULT);
-
-    // Blink phase: toggle every display_update() call (≈ 1 Hz at 500 ms period)
-    static bool blink = false;
-    blink = !blink;
 
     // ── Render ────────────────────────────────────────────────────────────────
     s_display.clearBuffer();
 
     // Title bar (state name)
-    draw_title(state_name(snap.state), is_fault, blink);
+    draw_title(state_name(snap.state), is_fault, false);
 
     // Separator below title
     draw_separator(16);
@@ -181,6 +207,10 @@ void display_update() {
     s_display.drawStr(0, 61, buf);
 
     s_display.sendBuffer();
+
+    s_last_status = snap;
+    s_last_enabled = enabled;
+    s_have_last = true;
 }
 
 void display_set_ota_active(bool active) {

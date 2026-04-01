@@ -7,6 +7,7 @@
 #include <Arduino.h>
 #include <WebServer.h>
 #include <ArduinoJson.h>
+#include <WiFi.h>
 
 // ─── Module state ─────────────────────────────────────────────────────────────
 static WebServer          s_server(WEB_SERVER_PORT);
@@ -442,6 +443,18 @@ static void handle_ota_update() {
     s_server.send(200, "application/json", "{\"ok\":true}");
 }
 
+static void handle_not_found() {
+  const String uri = s_server.uri();
+  if (uri.startsWith("/api/")) {
+    s_server.send(404, "application/json", "{\"ok\":false,\"error\":\"not found\"}");
+    return;
+  }
+
+  const String redirect = "http://" + WiFi.softAPIP().toString() + "/";
+  s_server.sendHeader("Location", redirect, true);
+  s_server.send(302, "text/plain", "");
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 void web_init(SemaphoreHandle_t status_mutex,
               SemaphoreHandle_t config_mutex,
@@ -460,6 +473,7 @@ void web_init(SemaphoreHandle_t status_mutex,
     s_server.on("/api/ota",        HTTP_GET,  handle_ota_get);
     s_server.on("/api/ota/check",  HTTP_POST, handle_ota_check);
     s_server.on("/api/ota/update", HTTP_POST, handle_ota_update);
+    s_server.onNotFound(handle_not_found);
 
     s_server.begin();
     Serial.println("[WEB] HTTP server started on port " + String(WEB_SERVER_PORT));
