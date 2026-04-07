@@ -103,7 +103,7 @@ static void stop_captive_portal_ap() {
     s_dns.stop();
     WiFi.softAPdisconnect(true);
     s_ap_active = false;
-    Serial.println("[WiFi] Captive portal AP stopped");
+    Serial.println("[WiFi] Captive portal AP stopped (mode change or STA connected)");
 }
 
 void disconnect_WiFi(bool wifi_off = true)
@@ -268,6 +268,14 @@ void wifi_tick() {
     // ── Non-blocking STA-reset phase sequence ─────────────────────────────────
     // start_sta_attempt() initiates this; each wifi_tick() call advances through
     // WAIT_AFTER_DISC → WAIT_AFTER_OFF → (s_connecting=true) without blocking.
+    //
+    // It is safe to return early here because:
+    //  • WL_CONNECTED is already handled above (sets s_sta_phase=IDLE), so a
+    //    connection completing mid-phase is not missed.
+    //  • s_connecting is false during the phase (WiFi.begin() has not been called
+    //    yet), so the timeout logic below would be a no-op anyway.
+    //  • Returning early prevents a concurrent call to start_sta_attempt() from
+    //    starting a second overlapping attempt while the reset is in progress.
     if (s_sta_phase != StaPhase::IDLE) {
         const uint32_t elapsed = (uint32_t)(now_ms - s_sta_phase_ms);
         if (s_sta_phase == StaPhase::WAIT_AFTER_DISC && elapsed >= 60U) {
