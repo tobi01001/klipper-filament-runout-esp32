@@ -73,8 +73,9 @@ void ota_github_update_request();
 /**
  * @brief Short status string for the last GitHub OTA operation.
  *
- * Returns one of: "idle", "checking", "up-to-date", "updating", "ok",
- * "failed".  Thread-safe (read of a volatile pointer to a string literal).
+ * Returns one of: "disabled", "idle", "checking", "update-available",
+ * "up-to-date", "updating", "ok", "failed".  Thread-safe (read of a
+ * volatile pointer to a string literal).
  */
 const char *ota_get_status();
 
