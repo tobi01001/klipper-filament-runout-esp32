@@ -21,6 +21,7 @@ struct EncoderData {
     int8_t   direction;        // +1 forward, -1 reverse, 0 stopped
     uint32_t timestamp_ms;     // millis() at time of snapshot
     float    velocity_mm_s;    // EMA-filtered filament velocity (mm/s)
+    bool     btn_pressed;      // Encoder push-button active (debounced, active LOW)
 };
 
 // ─── Persistent Runtime Configuration (NVS) ──────────────────────────────────
@@ -33,6 +34,11 @@ struct SensorConfig {
     uint16_t moonraker_port;         // Moonraker port (default 7125)
     char     wifi_ssid[64];          // Station SSID
     char     wifi_pass[64];          // Station password
+    char     ota_hostname[32];       // ArduinoOTA mDNS hostname (default: "filament-sensor")
+    char     ota_password[32];       // ArduinoOTA push password (default: "ota1234")
+    bool     sensor_enabled;         // Enable/disable fault triggering at runtime
+    bool     display_enabled;        // Enable/disable the OLED display at runtime
+    char     fault_gcode[64];        // GCODE sent to Moonraker via WebSocket on fault
 };
 
 // ─── Live Status (shared read by web handler) ─────────────────────────────────
@@ -40,7 +46,31 @@ struct SensorStatus {
     SystemState state;
     EncoderData encoder;          // Latest encoder snapshot
     float       extruder_vel;     // Latest extruder velocity from Moonraker
+    float       nozzle_temp;      // Current nozzle temperature (C)
+    float       nozzle_target;    // Current nozzle target temperature (C)
     bool        fault_active;
     bool        wifi_connected;
+    bool        moonraker_connected;   // WebSocket transport connected
+    bool        moonraker_subscribed;  // Object subscription established
+    bool        moonraker_stale;       // No recent extruder update
+    char        klippy_state[16];      // Moonraker server.info klippy_state
     char        ip_address[16];   // Current station IP (dotted quad)
+};
+
+// ─── Calibration State Machine ───────────────────────────────────────────────────
+enum class CalState : uint8_t {
+    IDLE,       // No calibration in progress
+    SENT,       // GCODE sent, waiting for encoder motion to start
+    MOVING,     // Encoder moving, accumulating ticks
+    SETTLING,   // Motion stopped, waiting for settle period
+    DONE,       // Result computed; cal_factor available
+    FAILED      // Timed out or encoder gave no ticks
+};
+
+struct CalibrationStatus {
+    CalState state;
+    float    result_cal_factor;  // computed mm/tick (valid when state == DONE)
+    int32_t  measured_ticks;     // net ticks counted
+    float    requested_mm;       // extrude distance requested
+    char     error[32];          // error description (valid when state == FAILED)
 };

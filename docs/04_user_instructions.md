@@ -1,6 +1,6 @@
 # Filament Runout Sensor – User Instructions
 
-**Version**: 1.0 | **Date**: 2026-03-30 | **Author**: tobi01001
+**Version**: 1.1 | **Date**: 2026-03-31 | **Author**: tobi01001
 
 ---
 
@@ -10,6 +10,7 @@
 |------|-------------|
 | ESP32 dev board | Any 38-pin variant with GPIO 25, 26, 27 available |
 | Optical / quadrature encoder | Mounted in the filament path (see HW spec) |
+| **SSD1306 OLED** (optional) | 0.96″ 128×64 I²C module, connected to GPIO 21 (SDA) / 22 (SCL) |
 | PlatformIO | Installed in VS Code or standalone CLI |
 | Python | ≥ 3.7 (required by PlatformIO) |
 | WiFi network | 2.4 GHz, WPA2 |
@@ -26,6 +27,37 @@ pio project init   # (if you need to regenerate .pio cache)
 
 Or open the `firmware/` folder directly in VS Code with the PlatformIO
 extension installed.
+
+---
+
+## Step 1a – OLED Display Setup (Optional)
+
+If you have a **0.96″ SSD1306 OLED module** (128×64, I²C), connect it to
+the ESP32 before flashing:
+
+| OLED pin | ESP32 pin | Notes |
+|----------|-----------|-------|
+| GND | GND | Common ground |
+| VCC | 3.3 V | **Use 3.3 V**, not 5 V, to match ESP32 logic |
+| SCL | GPIO 22 | Hardware I²C clock |
+| SDA | GPIO 21 | Hardware I²C data |
+
+> **I²C address**: the jumper on the back of the board selects the address.
+> Default is `0x3C` (jumper to GND).  If your module uses `0x3D` (jumper to VCC),
+> change `OLED_I2C_ADDR` in `firmware/src/config.h` before flashing.
+
+The display is **enabled by default** and shows:
+- System state (blinking inverted on FAULT)
+- Encoder velocity (mm/s)
+- Extruder velocity from Moonraker (mm/s)
+- Cumulative tick count + motion direction
+- Sensor IP address
+
+To **disable the display at compile time** (saves ~50 kB flash), comment out
+`#define ENABLE_OLED` in `config.h`.
+
+To **disable the display at runtime** without re-flashing, open the web UI,
+uncheck **Enable OLED display**, and click **Save & Apply**.
 
 ---
 
@@ -172,6 +204,9 @@ With a print running:
 | No fault on empty spool | Timeout too long | Decrease `timeout_ms` |
 | Web UI not reachable | IP changed | Check router DHCP table or serial monitor |
 | `ext_vel` always 0 | Moonraker IP/port wrong or Klipper offline | Ping Moonraker from browser |
+| OLED blank / no display | Display not found or disabled | Check wiring (SDA/SCL/VCC/GND); verify address in `config.h`; check serial for `[OLED] WARNING` |
+| OLED shows "WiFi offline" | WiFi not connected | Normal during AP mode or reconnecting; check WiFi config |
+| OLED title blinks rapidly | `FAULT` state active | Click **Reset Fault** in web UI after fixing the filament issue |
 
 ---
 
@@ -189,6 +224,7 @@ Connect a USB serial terminal at **115 200 baud** for real-time logs:
 [WiFi] Connecting to 'MyNetwork' …
 [WiFi] Connected, IP: 192.168.1.42
 [WEB]  HTTP server started on port 80
+[OLED] SSD1306 initialised (128x64) at I2C 0x3c
 [FSM]  READY → PRINTING
 [FSM]  PRINTING → FAULT
 [FAULT] Filament runout detected! GPIO 27 → LOW
