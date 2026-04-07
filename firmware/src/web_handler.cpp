@@ -827,8 +827,7 @@ static void handle_not_found() {
     return;
   }
 
-  const String redirect = "http://" + WiFi.softAPIP().toString() + "/";
-  s_server.sendHeader("Location", redirect, true);
+  s_server.sendHeader("Location", "/", true);
   s_server.send(302, "text/plain", "");
 }
 
