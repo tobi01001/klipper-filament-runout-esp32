@@ -141,6 +141,8 @@ compiled-in `FIRMWARE_VERSION`, and – if a newer release is found – streams 
 2. Build: `pio run -e esp32dev`
 3. Upload `.pio/build/esp32dev/firmware.bin` as a release asset named
    **`firmware.bin`** to a new GitHub release tagged `v<version>` (e.g. `v1.1.0`).
+
+**Web interface configuration:**
 - **Enable OLED display** toggle (persisted in NVS, no re-flash)
 
 ---
