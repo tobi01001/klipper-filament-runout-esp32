@@ -70,7 +70,7 @@
                                         // Common: 20 detents × 1 pulse × 4 = 80
                                         //         20 detents × 1 pulse × 1 = 20 (half-quad)
 #define DEFAULT_CAL_FACTOR  (M_PI * ENCODER_WHEEL_DIAM_MM / ENCODER_TICKS_PER_REV)
-// With defaults above: (π × 10) / 80 ≈ 0.3927 mm/tick
+// With defaults above: (π × 10) / 70 ≈ 0.4488 mm/tick
 #define DEFAULT_TIMEOUT_MS     2000UL       // ms of no filament motion → fault
 #define DEFAULT_MIN_EXT_VEL    0.5f         // mm/s extruder velocity → "printing"
 #define DEFAULT_MOTION_THRESH  1            // minimum |ticks| to count as motion
