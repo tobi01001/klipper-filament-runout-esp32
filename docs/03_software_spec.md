@@ -24,9 +24,12 @@ firmware/
     ├── config.h            # Compile-time constants, pin assignments & OLED flags
     ├── types.h             # Shared data structures & enums
     ├── encoder.h/.cpp      # Quadrature ISR + Core 1 speed task
-    ├── moonraker_client.h/.cpp  # HTTP polling of Klipper extruder velocity
+    ├── moonraker.h/.cpp    # WebSocket-based Klipper / Moonraker client
     ├── fault_detector.h/.cpp    # State machine + runout GPIO logic
     ├── nvs_config.h/.cpp   # NVS (Preferences) load / save
+    ├── ota_handler.h/.cpp  # ArduinoOTA + optional GitHub Releases OTA
+    ├── ota_runtime.h/.cpp  # OTA lifecycle integration with wifi_tick()
+    ├── wifi_handler.h/.cpp # Non-blocking WiFi state machine + captive portal
     ├── web_handler.h/.cpp  # Embedded web UI + REST API
     ├── display_handler.h/.cpp   # SSD1306 OLED display (compiled only if ENABLE_OLED)
     └── main.cpp            # Entry point, task creation
@@ -88,16 +91,20 @@ with `xQueueOverwrite` (single-slot, always latest).
 | Station disconnect | Exponential backoff: 1 s → 2 s → 4 s … max 60 s |
 | AP mode | Web UI accessible at `192.168.4.1` for initial setup |
 
-### 3.2 Moonraker Client (`moonraker_client.cpp`)
+### 3.2 Moonraker Client (`moonraker.cpp`)
 
-Polls every `MOONRAKER_POLL_MS` (200 ms = 5 Hz):
+Uses a persistent WebSocket connection (via the `links2004/WebSockets` library)
+to subscribe to Klipper object updates and query extruder velocity in real time.
 
-```
-GET http://<moonraker_ip>:<moonraker_port>/printer/objects/query?extruder
-```
+**Connection lifecycle:**
+- On WiFi connect, opens `ws://<moonraker_ip>:<moonraker_port>/websocket`
+- Sends `server.info` JSON-RPC request to verify Klippy readiness
+- Once Klippy reports `"ready"`, sends `printer.objects.subscribe` for `extruder`
+- Receives push notifications with `result.status.extruder.velocity` (float, mm/s)
+- Reconnects automatically with exponential back-off (1 s → 10 s) on disconnect
 
-Parses `result.status.extruder.velocity` (float, mm/s).  Returns `0.0`
-on network error or missing field (safe fallback – no spurious fault).
+**Diagnostic counters** (exposed via `/api/diag`): connect/disconnect events,
+subscribe requests, JSON errors, WS probe attempts, and a rolling event log.
 
 ### 3.3 Fault Detector (`fault_detector.cpp`)
 
@@ -183,7 +190,7 @@ for the display bus.
 
 **FAULT state**: the title bar alternates between an inverted white box with black
 text and normal text at 1 Hz (each `display_update()` call, called every
-`OLED_UPDATE_MS` = 500 ms).
+`OLED_UPDATE_MS` = 100 ms).
 
 #### Compile-time control
 
@@ -193,7 +200,7 @@ text and normal text at 1 Hz (each `display_update()` call, called every
 | *(comment out)* | `config.h` | Exclude driver entirely |
 | `OLED_SDA_PIN` / `OLED_SCL_PIN` | `config.h` | I²C pin assignment |
 | `OLED_I2C_ADDR` | `config.h` | I²C address (0x3C or 0x3D) |
-| `OLED_UPDATE_MS` | `config.h` | Refresh period (default 500 ms) |
+| `OLED_UPDATE_MS` | `config.h` | Refresh period (default 100 ms) |
 | `OLED_DEFAULT_EN` | `config.h` | First-boot default (true) |
 
 #### Runtime control

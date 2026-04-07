@@ -24,12 +24,13 @@ static SemaphoreHandle_t s_config_mutex = nullptr;
 static SensorStatus     *s_status       = nullptr;
 static SensorConfig     *s_config       = nullptr;
 
-static bool s_initialized   = false;
-static bool s_power_save_on = false;  // tracks display power state
-static bool s_ota_active    = false;  // true while an OTA update is running
-static bool s_have_last     = false;
+static bool s_initialized    = false;
+static bool s_power_save_on  = false;  // tracks display power state
+static bool s_ota_active     = false;  // true while an OTA update is running
+static bool s_have_last      = false;
 static SensorStatus s_last_status{};
-static bool s_last_enabled  = true;
+static bool s_last_enabled   = true;
+static bool s_last_blink     = false;  // previous blink phase – forces redraw on toggle
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
@@ -184,18 +185,23 @@ void display_update() {
     }
 
     // Update at 100 ms cadence but only redraw when something visible changed.
-    if (s_have_last && s_last_enabled == enabled && !status_changed(snap, s_last_status)) {
+    // During FAULT the title bar blinks at 1 Hz; force a redraw whenever the
+    // blink phase changes so the inversion actually toggles on screen.
+    const bool is_fault   = (snap.state == SystemState::FAULT);
+    const bool blink_phase = ((millis() / 500U) & 1U) == 0U;
+    const bool blink_changed = (blink_phase != s_last_blink);
+
+    if (s_have_last && s_last_enabled == enabled
+            && !status_changed(snap, s_last_status)
+            && !(is_fault && blink_changed)) {
         return;
     }
-
-    const bool is_fault = (snap.state == SystemState::FAULT);
-    const bool blink_phase = ((millis() / 500U) & 1U) == 0U;
 
     // ── Render ────────────────────────────────────────────────────────────────
     s_display.clearBuffer();
 
-    // Title bar (state name)
-    draw_title(state_name(snap.state), is_fault, false);
+    // Title bar (state name) — inverted on FAULT when blink_phase is true
+    draw_title(state_name(snap.state), is_fault, blink_phase);
     draw_moonraker_indicator(snap, blink_phase);
 
     // Separator below title
@@ -243,9 +249,10 @@ void display_update() {
 
     s_display.sendBuffer();
 
-    s_last_status = snap;
+    s_last_status  = snap;
     s_last_enabled = enabled;
-    s_have_last = true;
+    s_last_blink   = blink_phase;
+    s_have_last    = true;
 }
 
 void display_set_ota_active(bool active) {

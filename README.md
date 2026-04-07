@@ -20,7 +20,7 @@ via a Moonraker API poll and a direct runout GPIO signal.
 | **Dual-core FreeRTOS** | Core 1 handles ISR + speed calc; Core 0 handles WiFi + logic |
 | **Quadrature Gray-code decoder** | ISR latency < 5 µs; direction + velocity |
 | **EMA velocity filter** | Smooth 50 Hz speed estimate (α = 0.3) |
-| **Moonraker integration** | 5 Hz HTTP poll of extruder velocity |
+| **Moonraker integration** | WebSocket subscribe/notify of extruder velocity |
 | **Configurable fault timeout** | Default 2 s; adjustable 0.5–10 s |
 | **Physical fault reset** | Press the KY-040 knob to clear a runout fault |
 | **Web configuration UI** | Mobile-friendly dashboard; no app required |
@@ -52,10 +52,12 @@ klipper-filament-runout-esp32/
         ├── config.h                 ← All pin & timing constants + OLED flags
         ├── types.h                  ← Shared structs & state enum
         ├── encoder.h / .cpp         ← Quadrature ISR + SW button + 50 Hz Core 1 task
-        ├── moonraker_client.h / .cpp← HTTP poll of extruder velocity
+        ├── moonraker.h / .cpp       ← WebSocket-based Klipper / Moonraker client
         ├── fault_detector.h / .cpp  ← State machine + GPIO 27 runout signal
         ├── nvs_config.h / .cpp      ← Preferences (NVS) load/save
         ├── ota_handler.h / .cpp     ← ArduinoOTA + GitHub release OTA
+        ├── ota_runtime.h / .cpp     ← OTA lifecycle integration
+        ├── wifi_handler.h / .cpp    ← Non-blocking WiFi state machine + captive portal
         ├── web_handler.h / .cpp     ← Embedded SPA + REST API (port 80)
         ├── display_handler.h / .cpp ← SSD1306 OLED driver (optional, #ifdef ENABLE_OLED)
         └── main.cpp                 ← Entry point, task creation

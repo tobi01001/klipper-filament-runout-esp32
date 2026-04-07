@@ -62,8 +62,8 @@ jobs:
         with:
           path: |
             ~/.platformio
-            firmware/.pio
-          key: pio-${{ runner.os }}-${{ hashFiles('firmware/platformio.ini') }}
+            .pio
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
           restore-keys: |
             pio-${{ runner.os }}-
 
@@ -77,18 +77,18 @@ jobs:
         run: pip install platformio
 
       - name: Build firmware
-        run: |
-          cd firmware
-          pio run -e esp32dev
+        run: pio run -e esp32dev
 
       # ── 5. Commit the version bump ────────────────────────────────────────────
       - name: Commit and push version bump
+        id: version_commit
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add firmware/src/config.h
           git commit -m "chore: bump firmware version to ${{ steps.version.outputs.new }} [skip ci]"
           git push
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       # ── 6. Create GitHub Release with firmware.bin ────────────────────────────
       - name: Create GitHub Release
@@ -99,7 +99,7 @@ jobs:
           body: |
             ## Firmware ${{ steps.version.outputs.tag }}
 
-            Built automatically from [${{ github.sha }}](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}).
+            Built automatically from [${{ steps.version_commit.outputs.sha }}](${{ github.server_url }}/${{ github.repository }}/commit/${{ steps.version_commit.outputs.sha }}).
 
             ### Installing
 
@@ -111,5 +111,5 @@ jobs:
             ```bash
             pio run -e esp32dev_ota -t upload --upload-port <device-ip-or-hostname>
             ```
-          files: firmware/.pio/build/esp32dev/firmware.bin
+          files: .pio/build/esp32dev/firmware.bin
           token: ${{ secrets.GITHUB_TOKEN }}

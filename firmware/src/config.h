@@ -8,11 +8,17 @@
 #define PIN_RUNOUT        27   // Runout output to Klipper filament sensor (active LOW)
 
 // ─── OLED Display (SSD1306, 128×64, I²C) ─────────────────────────────────────
-// Comment out ENABLE_OLED to exclude all display code at compile time.
-// When enabled the display shows live state, encoder velocity, extruder velocity,
-// tick count, and the sensor IP address.  The display can also be toggled at
+// ENABLE_OLED is defined by default.  To exclude all display code at compile
+// time (saves ~50 kB flash and 1 kB RAM), either:
+//   • Pass -DDISABLE_OLED in build_flags (platformio.ini) – preferred, no
+//     source-file edit required.
+//   • Or manually comment out the #define ENABLE_OLED line below.
+// When enabled the display shows live state, encoder velocity, extruder
+// velocity, tick count, and the sensor IP address.  It can also be toggled at
 // runtime via the web interface without re-flashing.
+#ifndef DISABLE_OLED
 #define ENABLE_OLED
+#endif
 
 #ifdef ENABLE_OLED
 #define OLED_SDA_PIN    21        // I²C SDA (default ESP32 hardware I²C)

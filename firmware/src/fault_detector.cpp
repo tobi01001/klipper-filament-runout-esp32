@@ -293,7 +293,7 @@ void fault_detector_get_cal_status(CalibrationStatus *out) {
     if (!out) { return; }
     out->state             = s_cal_state;
     out->result_cal_factor = s_cal_result;
-    out->measured_ticks    = s_cal_tick_end - s_cal_tick_start;
+    out->measured_ticks    = abs(s_cal_tick_end - s_cal_tick_baseline);
     out->requested_mm      = s_cal_mm;
     strncpy(out->error, s_cal_error, sizeof(out->error) - 1);
     out->error[sizeof(out->error) - 1] = '\0';

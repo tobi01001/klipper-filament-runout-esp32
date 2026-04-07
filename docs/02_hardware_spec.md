@@ -50,7 +50,7 @@ Encoder Board          ESP32 Dev Board
   ChB  ─────────────── GPIO 26  (internal pull-up enabled in firmware; no external resistor needed)
 ```
 
-> **Internal pull-ups**: The firmware calls `pinMode(PIN_ENC_A, INPUT_PULLUP)` and `pinMode(PIN_ENC_B, INPUT_PULLUP)`, so the ESP32's built-in ≈ 45 kΩ pull-ups are always active.  External resistors are only needed if the encoder cable is longer than ≈ 30 cm and you observe signal glitches.
+> **Internal pull-ups**: The firmware calls `pinMode(PIN_ENCODER_CHA, INPUT_PULLUP)` and `pinMode(PIN_ENCODER_CHB, INPUT_PULLUP)`, so the ESP32's built-in ≈ 45 kΩ pull-ups are always active.  External resistors are only needed if the encoder cable is longer than ≈ 30 cm and you observe signal glitches.
 
 ### 3.2 Reusing an old optical mouse
 
