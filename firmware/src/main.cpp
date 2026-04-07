@@ -49,6 +49,19 @@ static QueueHandle_t   g_encoder_queue = nullptr;
 static SemaphoreHandle_t g_status_mutex = nullptr;
 static SemaphoreHandle_t g_config_mutex = nullptr;
 
+// RTC_DATA_ATTR persists across deep-sleep wake cycles but is reset to its
+// initialiser on a true power-on (cold boot / power loss).  We use this flag
+// as a one-shot first-boot sentinel: the very first time the ESP32 is powered
+// on, the flag is true and we perform a deliberate 1-second deep sleep before
+// doing anything else.  On wake from that sleep, firstrun is false (RTC
+// memory is intact) so normal initialisation proceeds.
+//
+// Rationale: the ESP32 RF subsystem can be left in an indeterminate state
+// immediately after a cold power-on.  A short deep sleep and wake cycle fully
+// resets the WiFi/BT hardware and ensures the radio stack comes up cleanly on
+// the subsequent boot, preventing the device from being unreachable after a
+// power cycle.  This adds only ~1 second to the very first boot and does not
+// affect any subsequent reboots or wake cycles.
 RTC_DATA_ATTR bool        firstrun = true;
 
 
@@ -176,6 +189,13 @@ void setup() {
     fault_detector_init(g_status_mutex, g_encoder_queue, &g_config, &g_status,
                         moonraker_send_gcode);
 
+    // ── First-boot WiFi-radio safeguard ───────────────────────────────────────
+    // On a cold power-on, firstrun is true (RTC_DATA_ATTR is reset when power
+    // is removed).  We immediately perform a 1-second deep sleep so that the
+    // ESP32 RF hardware is fully reset and reinitialised on the subsequent wake.
+    // This prevents the WiFi stack from being stale or unresponsive after a
+    // power cycle.  On wake, firstrun remains false (RTC memory survives deep
+    // sleep), so normal task initialisation proceeds without any further delay.
     if(firstrun) {
         Serial.println("[C0] First run detected - Going to sleep for a second");
         firstrun = false;
