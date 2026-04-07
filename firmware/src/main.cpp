@@ -86,7 +86,7 @@ void goto_sleep(uint16_t seconds)
   // (UINT32_MAX = 4 294 967 295), so the safe upper bound is
   // UINT32_MAX / 1 000 000 = 4 294 seconds (~71 minutes).
   // Values above that are clamped rather than using a 64-bit literal.
-  static constexpr uint16_t MAX_SLEEP_SECONDS = 4294U;
+  static constexpr uint32_t MAX_SLEEP_SECONDS = 4294UL;
   if (seconds > MAX_SLEEP_SECONDS) {
     Serial.printf("[WARN] goto_sleep: clamping %u s to %u s to avoid overflow\n",
                   (unsigned)seconds, (unsigned)MAX_SLEEP_SECONDS);

@@ -625,8 +625,9 @@ static void handle_reset() {
 static void handle_reboot() {
     // Send the response first so the client receives the confirmation before
     // the device resets.  The short delay gives the TCP stack time to flush.
+    static constexpr unsigned REBOOT_FLUSH_DELAY_MS = 100;
     s_server.send(200, "application/json", "{\"ok\":true}");
-    delay(100);
+    delay(REBOOT_FLUSH_DELAY_MS);
     ESP.restart();
 }
 

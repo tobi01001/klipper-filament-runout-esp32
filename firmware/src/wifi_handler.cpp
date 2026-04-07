@@ -103,7 +103,7 @@ static void stop_captive_portal_ap() {
     s_dns.stop();
     WiFi.softAPdisconnect(true);
     s_ap_active = false;
-    Serial.println("[WiFi] Captive portal AP stopped (mode change or STA connected)");
+    Serial.println("[WiFi] Captive portal AP stopped (mode change or station connected)");
 }
 
 void disconnect_WiFi(bool wifi_off = true)
