@@ -1,19 +1,43 @@
 #pragma once
 
 // ─── GPIO Pin Assignments ─────────────────────────────────────────────────────
-// KY-040 rotary encoder module pinout:
-//   CLK (Channel A) → PIN_ENCODER_CHA
-//   DT  (Channel B) → PIN_ENCODER_CHB
-//   SW  (push button, active LOW) → PIN_ENCODER_SW
-//   +   (VCC) → 3.3 V
-//   GND → GND
-#define PIN_ENCODER_CHA   25   // KY-040 CLK – quadrature Channel A (interrupt on CHANGE)
-#define PIN_ENCODER_CHB   26   // KY-040 DT  – quadrature Channel B (interrupt on CHANGE)
-#define PIN_ENCODER_SW    32   // KY-040 SW  – push-button (active LOW, internal pull-up)
+#define PIN_ENCODER_CHA   25   // Quadrature encoder Channel A (rising + falling)
+#define PIN_ENCODER_CHB   26   // Quadrature encoder Channel B (rising + falling)
+#define PIN_ENCODER_BTN   32   // Encoder push-button (active LOW, internal pull-up)
+                               // GPIO 32/33 support INPUT_PULLUP; 34-39 do NOT.
 #define PIN_RUNOUT        27   // Runout output to Klipper filament sensor (active LOW)
 
+// ─── OLED Display (SSD1306, 128×64, I²C) ─────────────────────────────────────
+// ENABLE_OLED is defined by default.  To exclude all display code at compile
+// time (saves ~50 kB flash and 1 kB RAM), either:
+//   • Pass -DDISABLE_OLED in build_flags (platformio.ini) – preferred, no
+//     source-file edit required.
+//   • Or manually comment out the #define ENABLE_OLED line below.
+// When enabled the display shows live state, encoder velocity, extruder
+// velocity, tick count, and the sensor IP address.  It can also be toggled at
+// runtime via the web interface without re-flashing.
+#ifndef DISABLE_OLED
+#define ENABLE_OLED
+#endif
+
+#ifdef ENABLE_OLED
+#define OLED_SDA_PIN    21        // I²C SDA (default ESP32 hardware I²C)
+#define OLED_SCL_PIN    22        // I²C SCL (default ESP32 hardware I²C)
+#define OLED_I2C_ADDR   0x3C      // SSD1306 I²C address: 0x3C or 0x3D
+#define OLED_WIDTH      128       // Display width in pixels
+#define OLED_HEIGHT     64        // Display height in pixels
+#define OLED_UPDATE_MS  100UL     // Display refresh period
+#define OLED_DEFAULT_EN true      // Enable display by default on first boot
+#endif
+
 // ─── FreeRTOS / Task Configuration ───────────────────────────────────────────
+#ifdef ENABLE_OLED
+// U8g2 full-buffer mode allocates 1 kB on the heap, but its rendering helpers
+// need a bit more stack headroom.  Bump Core 0 stack to 10 kB when OLED is on.
+#define CORE0_TASK_STACK  10240 // bytes – protocol core + OLED driver headroom
+#else
 #define CORE0_TASK_STACK  8192  // bytes – protocol core (WiFi, HTTP, fault detect)
+#endif
 #define CORE1_TASK_STACK  4096  // bytes – real-time core (encoder ISR, speed calc)
 #define CORE0_TASK_PRIO   5     // FreeRTOS priority
 #define CORE1_TASK_PRIO   10    // Higher priority → lower ISR latency
@@ -21,19 +45,53 @@
 
 // ─── Timing Constants ─────────────────────────────────────────────────────────
 #define ENCODER_UPDATE_MS  20UL   // Core 1 speed calc period (50 Hz)
+#define ENCODER_ISR_DEBOUNCE_US 120UL // Ignore edges closer than this (mechanical bounce guard)
+#define ENCODER_USE_PULSE_SERVICE false // true: count GPIO25 pulses only (speed-focused, no reverse direction)
+#define ENCODER_USE_FULL_STEP false // true: robust full-step decode, false: x4 edge decode
 #define MOONRAKER_POLL_MS  200UL  // Core 0 Moonraker poll period (5 Hz)
+#define MOONRAKER_INFO_MS  2000UL // JSON-RPC server.info interval while not ready
+#define MOONRAKER_SUB_RETRY_MS 2000UL // Retry interval for subscribe request
+#define MOONRAKER_STALE_MS 2500UL // No extruder update beyond this => stale
+#define MOONRAKER_WS_RECONNECT_MIN_MS 1000UL // Initial reconnect delay
+#define MOONRAKER_WS_RECONNECT_MAX_MS 10000UL // Maximum reconnect delay
 #define CORE0_LOOP_MS      10UL   // Core 0 main loop tick (100 Hz)
 
 // ─── Default Runtime Values (overridden by NVS on boot) ──────────────────────
-#define DEFAULT_CAL_FACTOR     0.01f        // mm per encoder tick
+//
+// ─── Wheel diameter & ticks-per-revolution → cal_factor ─────────────────────
+// The quadrature decoder counts 4 electrical edges per mechanical pulse.
+// If your encoder has N detents per revolution and P pulses per detent:
+//   ENCODER_TICKS_PER_REV = N * P * 4   (full quadrature, both edges, both channels)
+//
+// IMPORTANT: verify ENCODER_TICKS_PER_REV by watching the serial output:
+//   Hold the filament still, rotate the wheel exactly one full revolution slowly,
+//   then read the accumulated tick_count change. That number is your true value.
+//
+// Typical cheap 20-detent encoders, 1 pulse/detent, full quadrature → 80 ticks/rev.
+// If yours shows 20 ticks/rev in practice, it uses half-quad internally → use 20.
+//
+#define ENCODER_WHEEL_DIAM_MM   10.0f   // Pinch wheel outer diameter in mm
+#define ENCODER_TICKS_PER_REV   70      // Measured ticks for one full revolution
+                                        // (detents × pulses/detent × 4 for full-quad)
+                                        // Common: 20 detents × 1 pulse × 4 = 80
+                                        //         20 detents × 1 pulse × 1 = 20 (half-quad)
+#define DEFAULT_CAL_FACTOR  (M_PI * ENCODER_WHEEL_DIAM_MM / ENCODER_TICKS_PER_REV)
+// With defaults above: (π × 10) / 70 ≈ 0.4488 mm/tick
 #define DEFAULT_TIMEOUT_MS     2000UL       // ms of no filament motion → fault
 #define DEFAULT_MIN_EXT_VEL    0.5f         // mm/s extruder velocity → "printing"
 #define DEFAULT_MOTION_THRESH  1            // minimum |ticks| to count as motion
 #define DEFAULT_MOONRAKER_IP   "192.168.1.100"
 #define DEFAULT_MOONRAKER_PORT 7125
+#define DEFAULT_SENSOR_ENABLED true
+#define DEFAULT_FAULT_GCODE    "PAUSE"     // GCODE sent to Moonraker via WebSocket on fault
 
-// ─── Encoder Button Debounce ──────────────────────────────────────────────────
-#define ENCODER_BTN_DEBOUNCE_MS  50UL  // ignore edges within this window (ms)
+// ─── Auto-Calibration ────────────────────────────────────────────────────────
+#define CAL_EXTRUDE_MM         50.0f      // default calibration extrude distance (mm)
+#define CAL_EXTRUDE_SPEED_MMPM 300.0f     // default extrude speed (mm/min = 5 mm/s)
+#define CAL_WAIT_START_MS      3000UL     // max ms to wait for encoder motion to begin
+#define CAL_WAIT_STOP_MS       30000UL    // max ms to wait for motion to stop
+#define CAL_SETTLE_MS          400UL      // ms of near-zero velocity before result is computed
+#define CAL_ENC_IDLE_MS        600UL      // ms of encoder ISR silence required to declare motion stopped
 
 // ─── EMA Velocity Filter ─────────────────────────────────────────────────────
 #define EMA_ALPHA  0.3f   // exponential moving average weight (0 = no response)
@@ -48,7 +106,13 @@
 #define WEB_SERVER_PORT  80
 
 // ─── Serial Debug ─────────────────────────────────────────────────────────────
-#define SERIAL_BAUD  115200
+#define SERIAL_BAUD                115200
+#define DEBUG_LOG_ENABLED          0      // 1 enables DBG_* macros in debug_log.h
+
+// ─── Velocity Median Filter ──────────────────────────────────────────────────
+// Odd integer ≥ 3. Larger = better spike rejection, slightly more latency.
+#define VEL_MEDIAN_N  5
+
 
 // ─── NVS Namespace & Keys ────────────────────────────────────────────────────
 // NVS namespace and key names are limited to 15 characters.
@@ -61,3 +125,33 @@
 #define NVS_KEY_MR_PORT  "mr_port"
 #define NVS_KEY_SSID     "wifi_ssid"
 #define NVS_KEY_PASS     "wifi_pass"
+#define NVS_KEY_OTA_HOST "ota_hostname"
+#define NVS_KEY_OTA_PASS "ota_password"
+#define NVS_KEY_SENSOR_EN "sensor_en"
+#define NVS_KEY_FAULT_GCODE "fault_gcode"
+
+// ─── Firmware Version ─────────────────────────────────────────────────────────
+// Bump this when cutting a new GitHub release so the OTA checker can compare.
+#define FIRMWARE_VERSION  "1.0.0"
+
+// ─── OTA (Over-The-Air Update) ────────────────────────────────────────────────
+// mDNS hostname advertised by ArduinoOTA; reachable as <OTA_HOSTNAME>.local on
+// the local network once mDNS is working.
+#define OTA_HOSTNAME     "filament-sensor"
+
+// Password required for the espota push protocol (PlatformIO / VS Code upload).
+// Change this to something unique before deploying in a shared network.
+#define OTA_PASSWORD     "ota1234"
+
+// GitHub repository for the automatic update check.
+// The OTA handler calls the GitHub Releases API, compares the latest tag_name
+// with FIRMWARE_VERSION, and – if newer – streams the "firmware.bin" asset
+// through HTTPUpdate to the inactive OTA partition.
+#define GITHUB_OWNER     "tobi01001"
+#define GITHUB_REPO      "klipper-filament-runout-esp32"
+#define GITHUB_API_URL   "https://api.github.com/repos/" GITHUB_OWNER "/" GITHUB_REPO "/releases/latest"
+#define ENABLE_GITHUB_OTA 0              // 0 removes HTTPS GitHub OTA path and mbedTLS dependency
+
+// Maximum time to wait for the GitHub API or asset download (ms).
+#define OTA_HTTP_TIMEOUT_MS  20000
+#define NVS_KEY_DISP_EN  "disp_en"

@@ -24,6 +24,18 @@ void nvs_load(SensorConfig &cfg) {
         cfg.moonraker_port   = DEFAULT_MOONRAKER_PORT;
         cfg.wifi_ssid[0]     = '\0';
         cfg.wifi_pass[0]     = '\0';
+        strncpy(cfg.ota_hostname, OTA_HOSTNAME, sizeof(cfg.ota_hostname) - 1);
+        cfg.ota_hostname[sizeof(cfg.ota_hostname) - 1] = '\0';
+        strncpy(cfg.ota_password, OTA_PASSWORD, sizeof(cfg.ota_password) - 1);
+        cfg.ota_password[sizeof(cfg.ota_password) - 1] = '\0';
+        cfg.sensor_enabled = DEFAULT_SENSOR_ENABLED;
+        strncpy(cfg.fault_gcode, DEFAULT_FAULT_GCODE, sizeof(cfg.fault_gcode) - 1);
+        cfg.fault_gcode[sizeof(cfg.fault_gcode) - 1] = '\0';
+#ifdef ENABLE_OLED
+        cfg.display_enabled  = OLED_DEFAULT_EN;
+#else
+        cfg.display_enabled  = false;
+#endif
         nvs_save(cfg);
         return;
     }
@@ -47,6 +59,25 @@ void nvs_load(SensorConfig &cfg) {
     strncpy(cfg.wifi_pass, pass.c_str(), sizeof(cfg.wifi_pass) - 1);
     cfg.wifi_pass[sizeof(cfg.wifi_pass) - 1] = '\0';
 
+    String ota_host = prefs.getString(NVS_KEY_OTA_HOST, OTA_HOSTNAME);
+    strncpy(cfg.ota_hostname, ota_host.c_str(), sizeof(cfg.ota_hostname) - 1);
+    cfg.ota_hostname[sizeof(cfg.ota_hostname) - 1] = '\0';
+
+    String ota_pass = prefs.getString(NVS_KEY_OTA_PASS, OTA_PASSWORD);
+    strncpy(cfg.ota_password, ota_pass.c_str(), sizeof(cfg.ota_password) - 1);
+    cfg.ota_password[sizeof(cfg.ota_password) - 1] = '\0';
+    cfg.sensor_enabled = prefs.getBool(NVS_KEY_SENSOR_EN, DEFAULT_SENSOR_ENABLED);
+
+    String fault_gcode = prefs.getString(NVS_KEY_FAULT_GCODE, DEFAULT_FAULT_GCODE);
+    strncpy(cfg.fault_gcode, fault_gcode.c_str(), sizeof(cfg.fault_gcode) - 1);
+    cfg.fault_gcode[sizeof(cfg.fault_gcode) - 1] = '\0';
+
+#ifdef ENABLE_OLED
+    cfg.display_enabled = prefs.getBool(NVS_KEY_DISP_EN, OLED_DEFAULT_EN);
+#else
+    cfg.display_enabled = false;
+#endif
+
     prefs.end();
     Serial.println("[NVS] Configuration loaded from NVS");
 }
@@ -66,6 +97,11 @@ void nvs_save(const SensorConfig &cfg) {
     prefs.putString(NVS_KEY_MR_IP,   cfg.moonraker_ip);
     prefs.putString(NVS_KEY_SSID,    cfg.wifi_ssid);
     prefs.putString(NVS_KEY_PASS,    cfg.wifi_pass);
+    prefs.putString(NVS_KEY_OTA_HOST, cfg.ota_hostname);
+    prefs.putString(NVS_KEY_OTA_PASS, cfg.ota_password);
+    prefs.putBool  (NVS_KEY_SENSOR_EN, cfg.sensor_enabled);
+    prefs.putString(NVS_KEY_FAULT_GCODE, cfg.fault_gcode);
+    prefs.putBool  (NVS_KEY_DISP_EN, cfg.display_enabled);
 
     prefs.end();
     Serial.println("[NVS] Configuration saved to NVS");

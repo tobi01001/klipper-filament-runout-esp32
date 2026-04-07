@@ -23,19 +23,23 @@
  */
 
 #include <Arduino.h>
-#include <WiFi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
+#include <esp_wifi.h>   // esp32 low level interface functions for WiFi
+#include <esp_bt.h>     // esp32 low level interface functions for WiFi
 
 #include "config.h"
 #include "types.h"
 #include "encoder.h"
-#include "moonraker_client.h"
 #include "fault_detector.h"
 #include "nvs_config.h"
 #include "web_handler.h"
+#include "display_handler.h"
+#include "wifi_handler.h"
+#include "moonraker.h"
+#include "ota_runtime.h"
 
 // ─── Global shared state ──────────────────────────────────────────────────────
 static SensorConfig    g_config{};
@@ -45,148 +49,109 @@ static QueueHandle_t   g_encoder_queue = nullptr;
 static SemaphoreHandle_t g_status_mutex = nullptr;
 static SemaphoreHandle_t g_config_mutex = nullptr;
 
-// ─── WiFi helpers (Core 0) ────────────────────────────────────────────────────
-static bool wifi_connect(const SensorConfig &cfg) {
-    if (cfg.wifi_ssid[0] == '\0') {
-        Serial.println("[WiFi] No SSID configured – starting AP mode");
-        return false;
-    }
+// RTC_DATA_ATTR persists across deep-sleep wake cycles but is reset to its
+// initialiser on a true power-on (cold boot / power loss).  We use this flag
+// as a one-shot first-boot sentinel: the very first time the ESP32 is powered
+// on, the flag is true and we perform a deliberate 1-second deep sleep before
+// doing anything else.  On wake from that sleep, firstrun is false (RTC
+// memory is intact) so normal initialisation proceeds.
+//
+// Rationale: the ESP32 RF subsystem can be left in an indeterminate state
+// immediately after a cold power-on.  A short deep sleep and wake cycle fully
+// resets the WiFi/BT hardware and ensures the radio stack comes up cleanly on
+// the subsequent boot, preventing the device from being unreachable after a
+// power cycle.  This adds only ~1 second to the very first boot and does not
+// affect any subsequent reboots or wake cycles.
+RTC_DATA_ATTR bool        firstrun = true;
 
-    Serial.printf("[WiFi] Connecting to '%s' …\n", cfg.wifi_ssid);
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(cfg.wifi_ssid, cfg.wifi_pass);
 
-    const uint32_t deadline = millis() + WIFI_CONNECT_TIMEOUT_MS;
-    while (WiFi.status() != WL_CONNECTED && millis() < deadline) {
-        vTaskDelay(pdMS_TO_TICKS(500));
-    }
+void goto_sleep(uint16_t seconds)
+{
+  // Strange but the ESP will fail to reconnect on the next wake if WiFi is not 
+  // explicitely turned off.
+  // further, this will save additional energy.
+  Serial.println("Turning off WiFi and Bluetooth before sleeping...");
+  disconnect_WiFi(true);
 
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.printf("[WiFi] Connected, IP: %s\n", WiFi.localIP().toString().c_str());
-        return true;
-    }
+  // we also explicitely turn off BlueTooth
+  Serial.println("Turning off Bluetooth...");
+  btStop();
 
-    Serial.println("[WiFi] Connection timeout");
-    return false;
+  // and also low level ESP framework functions to turn off BT finally
+  Serial.println("Disabling Bluetooth controller...");
+  esp_bt_controller_disable();
+
+  // Guard against 32-bit integer overflow in the microsecond conversion.
+  // The product 1000000 × seconds must fit inside a uint32_t
+  // (UINT32_MAX = 4 294 967 295), so the safe upper bound is
+  // UINT32_MAX / 1 000 000 = 4 294 seconds (~71 minutes).
+  // Values above that are clamped rather than using a 64-bit literal.
+  static constexpr uint32_t MAX_SLEEP_SECONDS = 4294UL;
+  if (seconds > MAX_SLEEP_SECONDS) {
+    Serial.printf("[WARN] goto_sleep: clamping %u s to %u s to avoid overflow\n",
+                  (unsigned)seconds, (unsigned)MAX_SLEEP_SECONDS);
+    seconds = MAX_SLEEP_SECONDS;
+  }
+  const uint32_t sleep_us = (uint32_t)seconds * 1000000UL;
+  esp_sleep_enable_timer_wakeup(sleep_us);
+
+  // Go to sleep now.
+
+  Serial.println("Going to sleep for " + String(seconds) + " seconds.\n");
+  
+  esp_deep_sleep_start();
+  // this line will never be reached!
 }
 
-static void wifi_start_ap() {
-    WiFi.mode(WIFI_AP);
-    WiFi.softAP(WIFI_AP_SSID, WIFI_AP_PASS);
-    Serial.printf("[WiFi] AP mode – SSID: %s  IP: %s\n",
-                  WIFI_AP_SSID,
-                  WiFi.softAPIP().toString().c_str());
-}
 
 // ─── Core 0 Task – Protocol, Fault Detection, Web Server ─────────────────────
 static void core0_task(void * /*param*/) {
     Serial.println("[C0] Core 0 task started");
-
-    // ── WiFi connection with exponential backoff ───────────────────────────
-    uint32_t backoff_ms = 1000;
-    bool connected = false;
-
-    {
-        if (xSemaphoreTake(g_status_mutex, portMAX_DELAY) == pdTRUE) {
-            g_status.state = SystemState::WIFI_CONN;
-            xSemaphoreGive(g_status_mutex);
-        }
-
-        SensorConfig cfg_snap{};
-        if (xSemaphoreTake(g_config_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-            cfg_snap = g_config;
-            xSemaphoreGive(g_config_mutex);
-        }
-
-        connected = wifi_connect(cfg_snap);
-
-        if (!connected) {
-            if (xSemaphoreTake(g_status_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-                g_status.state = SystemState::WIFI_FAIL;
-                xSemaphoreGive(g_status_mutex);
-            }
-            wifi_start_ap();
-            // AP mode still allows web-based configuration
-            connected = true; // Web server works over AP too
-        }
-    }
-
-    // ── Update IP address in status ────────────────────────────────────────
-    String ip = (WiFi.status() == WL_CONNECTED)
-                    ? WiFi.localIP().toString()
-                    : WiFi.softAPIP().toString();
-    if (xSemaphoreTake(g_status_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-        strncpy(g_status.ip_address, ip.c_str(), sizeof(g_status.ip_address) - 1);
-        g_status.ip_address[sizeof(g_status.ip_address) - 1] = '\0';
-        g_status.wifi_connected = (WiFi.status() == WL_CONNECTED);
-        if (g_status.state != SystemState::FAULT &&
-            g_status.state != SystemState::WIFI_FAIL) {
-            g_status.state = SystemState::READY;
-        }
-        xSemaphoreGive(g_status_mutex);
-    }
-
-    // ── Start web server ───────────────────────────────────────────────────
-    web_init(g_status_mutex, g_config_mutex, &g_status, &g_config);
+    wifi_init(g_status_mutex, g_config_mutex, &g_status, &g_config);
+    moonraker_init(g_status_mutex, g_config_mutex, &g_status, &g_config);
+    ota_runtime_init(g_config_mutex, &g_config);
+#ifdef ENABLE_OLED
+    // ── Initialise OLED display (Core 0 only – I²C stays on one core) ─────
+    display_init(g_status_mutex, g_config_mutex, &g_status, &g_config);
+#endif
 
     // ── Main protocol loop ─────────────────────────────────────────────────
-    TickType_t last_mr_poll = xTaskGetTickCount();
-    TickType_t last_reconnect_check = xTaskGetTickCount();
-    backoff_ms = 1000;
+#ifdef ENABLE_OLED
+    TickType_t last_display_update = xTaskGetTickCount();
+#endif
+
+    bool web_started = false;
 
     while (true) {
-        // Handle HTTP requests (non-blocking when no client pending)
-        web_handle_client();
+        wifi_tick();
+        const bool wifi_connected = wifi_is_connected();
+        const bool network_ready = wifi_is_network_ready();
 
-        // Moonraker polling at 5 Hz
-        if ((xTaskGetTickCount() - last_mr_poll) >= pdMS_TO_TICKS(MOONRAKER_POLL_MS)) {
-            last_mr_poll = xTaskGetTickCount();
-
-            SensorConfig cfg_snap{};
-            if (xSemaphoreTake(g_config_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-                cfg_snap = g_config;
-                xSemaphoreGive(g_config_mutex);
-            }
-
-            const float ext_vel = moonraker_poll(cfg_snap);
-            fault_detector_update(ext_vel);
+        if (network_ready && !web_started) {
+            web_init(g_status_mutex, g_config_mutex, &g_status, &g_config);
+            web_started = true;
         }
 
-        // WiFi reconnect check (station mode only) with exponential backoff
-        if ((xTaskGetTickCount() - last_reconnect_check) >=
-            pdMS_TO_TICKS(backoff_ms)) {
-            last_reconnect_check = xTaskGetTickCount();
-
-            if (WiFi.getMode() == WIFI_STA &&
-                WiFi.status() != WL_CONNECTED) {
-                Serial.printf("[WiFi] Reconnecting (backoff %lu ms) …\n",
-                              backoff_ms);
-
-                SensorConfig cfg_snap{};
-                if (xSemaphoreTake(g_config_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-                    cfg_snap = g_config;
-                    xSemaphoreGive(g_config_mutex);
-                }
-
-                if (wifi_connect(cfg_snap)) {
-                    backoff_ms = 1000; // Reset backoff on success
-                    String new_ip = WiFi.localIP().toString();
-                    if (xSemaphoreTake(g_status_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-                        strncpy(g_status.ip_address, new_ip.c_str(),
-                                sizeof(g_status.ip_address) - 1);
-                        g_status.wifi_connected = true;
-                        xSemaphoreGive(g_status_mutex);
-                    }
-                } else {
-                    // Exponential backoff capped at WIFI_RECONNECT_MAX_MS
-                    backoff_ms = min(backoff_ms * 2, (uint32_t)WIFI_RECONNECT_MAX_MS);
-                    if (xSemaphoreTake(g_status_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-                        g_status.wifi_connected = false;
-                        xSemaphoreGive(g_status_mutex);
-                    }
-                }
-            }
+        // Web UI is available over STA or AP captive portal.
+        if (network_ready) {
+            web_handle_client();
         }
+
+        // Moonraker and OTA are serviced only while station mode is connected.
+        if (wifi_connected) {
+            ota_runtime_tick(true);
+            moonraker_tick();
+        } else {
+            moonraker_set_disconnected();
+        }
+
+#ifdef ENABLE_OLED
+        if ((xTaskGetTickCount() - last_display_update) >=
+            pdMS_TO_TICKS(OLED_UPDATE_MS)) {
+            last_display_update = xTaskGetTickCount();
+            display_update();
+        }
+#endif
 
         vTaskDelay(pdMS_TO_TICKS(CORE0_LOOP_MS));
     }
@@ -231,9 +196,22 @@ void setup() {
     // Load persistent configuration from NVS
     nvs_load(g_config);
 
-    // Initialise fault detector (configures runout GPIO)
-    fault_detector_init(g_status_mutex, g_encoder_queue, &g_config, &g_status);
+    // Initialise fault detector (configures runout GPIO); wire GCODE sender
+    fault_detector_init(g_status_mutex, g_encoder_queue, &g_config, &g_status,
+                        moonraker_send_gcode);
 
+    // ── First-boot WiFi-radio safeguard ───────────────────────────────────────
+    // On a cold power-on, firstrun is true (RTC_DATA_ATTR is reset when power
+    // is removed).  We immediately perform a 1-second deep sleep so that the
+    // ESP32 RF hardware is fully reset and reinitialised on the subsequent wake.
+    // This prevents the WiFi stack from being stale or unresponsive after a
+    // power cycle.  On wake, firstrun remains false (RTC memory survives deep
+    // sleep), so normal task initialisation proceeds without any further delay.
+    if(firstrun) {
+        Serial.println("[C0] First run detected - Going to sleep for a second");
+        firstrun = false;
+        goto_sleep(1);
+    }
     // ── Launch FreeRTOS tasks ──────────────────────────────────────────────
     // Core 0: protocol, WiFi, Moonraker, fault detection, web server
     xTaskCreatePinnedToCore(

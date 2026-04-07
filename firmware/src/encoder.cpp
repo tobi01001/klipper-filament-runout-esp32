@@ -1,22 +1,24 @@
 #include "encoder.h"
 #include "config.h"
+#include "debug_log.h"
 
 // ─── ISR-visible globals ──────────────────────────────────────────────────────
 volatile uint32_t g_last_motion_ms = 0;
-volatile bool     g_button_pressed = false;
 
 static volatile int32_t  s_tick_count = 0;
-static volatile int8_t   s_direction  = 0;
 static volatile uint8_t  s_prev_state = 0;
 static portMUX_TYPE      s_mux        = portMUX_INITIALIZER_UNLOCKED;
-
-// ─── Button debounce state (ISR-visible) ─────────────────────────────────────
-static volatile uint32_t s_btn_last_ms = 0;
+static volatile uint32_t s_last_isr_us = 0;
+static volatile uint32_t s_rejected_edges = 0;
+static volatile uint32_t s_valid_edges = 0;
+static volatile uint32_t s_invalid_transitions = 0;
+static volatile int8_t   s_step_accum = 0;
 
 static QueueHandle_t     s_queue = nullptr;
 static const SensorConfig *s_cfg = nullptr;
 
-// ─── Gray-code Quadrature Decoder Table ──────────────────────────────────────
+#if !ENCODER_USE_PULSE_SERVICE
+// ─── Gray-code Quadrature Decoder Table ────────────────────────────────────
 // index = (prev_state << 2) | curr_state
 // state encoding: bit1 = ChB, bit0 = ChA
 // Forward (CW) sequence: 0b00 → 0b01 → 0b11 → 0b10 → 0b00 → … (+1 each step)
@@ -27,39 +29,77 @@ static const int8_t QEM[16] = {
     +1,  0,  0, -1,  // prev = 0b10
      0, -1, +1,  0   // prev = 0b11
 };
+#endif
 
-// ─── ISR – quadrature channels ───────────────────────────────────────────────
+// ─── ISR ─────────────────────────────────────────────────────────────────────
+#if ENCODER_USE_PULSE_SERVICE
 static void IRAM_ATTR encoder_isr() {
+    const uint32_t now_us = static_cast<uint32_t>(micros());
+
+    if ((uint32_t)(now_us - s_last_isr_us) < ENCODER_ISR_DEBOUNCE_US) {
+        s_rejected_edges++;
+        return;
+    }
+    s_last_isr_us = now_us;
+
+    portENTER_CRITICAL_ISR(&s_mux);
+    s_tick_count += 1;
+    s_valid_edges++;
+    g_last_motion_ms = static_cast<uint32_t>(millis());
+    portEXIT_CRITICAL_ISR(&s_mux);
+}
+#else
+static void IRAM_ATTR encoder_isr() {
+    const uint32_t now_us = static_cast<uint32_t>(micros());
+
+    // Reject very closely spaced edges (mechanical bounce / ringing).
+    if ((uint32_t)(now_us - s_last_isr_us) < ENCODER_ISR_DEBOUNCE_US) {
+        s_rejected_edges++;
+        return;
+    }
+    s_last_isr_us = now_us;
+
     // Read both channels atomically (both reads < 100 ns, encoder << 1 MHz)
     const uint8_t chA  = static_cast<uint8_t>(digitalRead(PIN_ENCODER_CHA));
     const uint8_t chB  = static_cast<uint8_t>(digitalRead(PIN_ENCODER_CHB));
     const uint8_t curr = (chB << 1) | chA;
 
-    const int8_t delta = QEM[(s_prev_state << 2) | curr];
+    int8_t delta = 0;
 
     portENTER_CRITICAL_ISR(&s_mux);
+    const uint8_t prev = s_prev_state;
+    delta = QEM[(prev << 2) | curr];
+    s_prev_state = curr;
+
+    if (delta == 0 && curr != prev) {
+        // Non-adjacent state transition indicates bounce/skipped edge.
+        s_invalid_transitions++;
+    }
+
+#if ENCODER_USE_FULL_STEP
+    if (delta != 0) {
+        s_step_accum += delta;
+        s_valid_edges++;
+        if (s_step_accum >= 3) {
+            s_tick_count += 1;
+            s_step_accum = 0;
+            g_last_motion_ms = static_cast<uint32_t>(millis());
+        } else if (s_step_accum <= -3) {
+            s_tick_count -= 1;
+            s_step_accum = 0;
+            g_last_motion_ms = static_cast<uint32_t>(millis());
+        }
+    }
+#else
     s_tick_count += delta;
     if (delta != 0) {
-        s_direction    = (delta > 0) ? 1 : -1;
+        s_valid_edges++;
         g_last_motion_ms = static_cast<uint32_t>(millis());
     }
+#endif
     portEXIT_CRITICAL_ISR(&s_mux);
-
-    s_prev_state = curr;
 }
-
-// ─── ISR – KY-040 push-button (SW pin, active LOW) ───────────────────────────
-static void IRAM_ATTR button_isr() {
-    // Only react to falling edge (button press); rising edge = release
-    if (digitalRead(PIN_ENCODER_SW) != LOW) {
-        return;
-    }
-    const uint32_t now = static_cast<uint32_t>(millis());
-    if ((now - s_btn_last_ms) >= ENCODER_BTN_DEBOUNCE_MS) {
-        s_btn_last_ms  = now;
-        g_button_pressed = true;
-    }
-}
+#endif
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 void encoder_init(QueueHandle_t queue, const SensorConfig *cfg) {
@@ -68,8 +108,13 @@ void encoder_init(QueueHandle_t queue, const SensorConfig *cfg) {
 
     pinMode(PIN_ENCODER_CHA, INPUT_PULLUP);
     pinMode(PIN_ENCODER_CHB, INPUT_PULLUP);
-    pinMode(PIN_ENCODER_SW,  INPUT_PULLUP);
+    pinMode(PIN_ENCODER_BTN, INPUT_PULLUP);
 
+#if ENCODER_USE_PULSE_SERVICE
+    attachInterrupt(digitalPinToInterrupt(PIN_ENCODER_CHA), encoder_isr, RISING);
+    DBG_PRINTF("[ENC] Pulse service initialised (ChA=%d RISING, Btn=%d)\n",
+               PIN_ENCODER_CHA, PIN_ENCODER_BTN);
+#else
     // Capture initial state so first ISR transition is interpreted correctly
     const uint8_t chA  = static_cast<uint8_t>(digitalRead(PIN_ENCODER_CHA));
     const uint8_t chB  = static_cast<uint8_t>(digitalRead(PIN_ENCODER_CHB));
@@ -77,17 +122,23 @@ void encoder_init(QueueHandle_t queue, const SensorConfig *cfg) {
 
     attachInterrupt(digitalPinToInterrupt(PIN_ENCODER_CHA), encoder_isr, CHANGE);
     attachInterrupt(digitalPinToInterrupt(PIN_ENCODER_CHB), encoder_isr, CHANGE);
-    attachInterrupt(digitalPinToInterrupt(PIN_ENCODER_SW),  button_isr,  CHANGE);
 
-    Serial.println("[ENC] Encoder initialised (CLK=" + String(PIN_ENCODER_CHA) +
-                   ", DT=" + String(PIN_ENCODER_CHB) +
-                   ", SW=" + String(PIN_ENCODER_SW) + ")");
+    DBG_PRINTF("[ENC] Quadrature service initialised (ChA=%d, ChB=%d, Btn=%d)\n",
+               PIN_ENCODER_CHA, PIN_ENCODER_CHB, PIN_ENCODER_BTN);
+#endif
 }
 
 void encoder_task(void * /*param*/) {
     int32_t  last_ticks  = 0;
     uint32_t last_time   = millis();
     float    vel_ema     = 0.0f;
+
+    // Button debounce state (task-level, not ISR)
+    uint8_t  btn_history  = 0xFF;  // shift register; all-high → not pressed
+    bool     btn_state    = false;
+    int32_t  last_reported_ticks = 0;
+    bool     last_reported_btn   = false;
+    uint32_t last_edge_log_ms    = millis();
 
     TickType_t last_wake = xTaskGetTickCount();
 
@@ -102,21 +153,52 @@ void encoder_task(void * /*param*/) {
 
         // Snapshot tick counter and direction under critical section
         int32_t ticks;
-        int8_t  dir;
         portENTER_CRITICAL(&s_mux);
         ticks = s_tick_count;
-        dir   = s_direction;
         portEXIT_CRITICAL(&s_mux);
 
         const int32_t delta = ticks - last_ticks;
+        const int8_t dir = (delta > 0) ? 1 : ((delta < 0) ? -1 : 0);
         last_ticks = ticks;
         last_time  = now_ms;
 
-        // Calculate instantaneous velocity, apply EMA filter
+        // Calculate velocity using a sliding window tick accumulator.
+        // A per-20 ms median on velocity fails at low speeds: most windows have
+        // delta=0 (e.g. 11 ticks/s gives 0.22 ticks/window), so the median is
+        // permanently zero.  Summing ticks over N windows gives a meaningful
+        // velocity even at very low tick rates, while spreading a single noise
+        // spike across N windows suppresses it adequately.
         const float cal_factor = s_cfg ? s_cfg->cal_factor : DEFAULT_CAL_FACTOR;
-        const float raw_vel    = (static_cast<float>(delta) * cal_factor) /
-                                 (static_cast<float>(dt_ms) / 1000.0f);
+
+        static int32_t  s_win_ticks[VEL_MEDIAN_N] = {};
+        static uint32_t s_win_dt_ms[VEL_MEDIAN_N]  = {};
+        static uint8_t  s_win_idx = 0;
+
+        s_win_ticks[s_win_idx] = delta;
+        s_win_dt_ms[s_win_idx] = dt_ms;
+        s_win_idx = (s_win_idx + 1) % VEL_MEDIAN_N;
+
+        int32_t  win_tick_sum = 0;
+        uint32_t win_time_ms  = 0;
+        for (uint8_t i = 0; i < VEL_MEDIAN_N; ++i) {
+            win_tick_sum += s_win_ticks[i];
+            win_time_ms  += s_win_dt_ms[i];
+        }
+        const float raw_vel = (win_time_ms > 0)
+            ? (static_cast<float>(win_tick_sum) * cal_factor /
+               (static_cast<float>(win_time_ms) / 1000.0f))
+            : 0.0f;
+
         vel_ema = EMA_ALPHA * raw_vel + (1.0f - EMA_ALPHA) * vel_ema;
+
+        // Button debounce: shift in current reading; stable only when all 8 bits agree
+        btn_history = static_cast<uint8_t>((btn_history << 1) |
+                      (digitalRead(PIN_ENCODER_BTN) == LOW ? 1 : 0));
+        if (btn_history == 0xFF) {
+            btn_state = true;   // 8 consecutive LOW readings → pressed
+        } else if (btn_history == 0x00) {
+            btn_state = false;  // 8 consecutive HIGH readings → released
+        }
 
         // Push latest state to single-slot queue (overwrites previous if unread)
         EncoderData data;
@@ -125,9 +207,48 @@ void encoder_task(void * /*param*/) {
         data.direction     = dir;
         data.timestamp_ms  = now_ms;
         data.velocity_mm_s = vel_ema;
+        data.btn_pressed   = btn_state;
 
         if (s_queue != nullptr) {
             xQueueOverwrite(s_queue, &data);
+        }
+
+        // Event-driven serial debug output
+        if ((ticks != last_reported_ticks) || (btn_state != last_reported_btn)) {
+            last_reported_ticks = ticks;
+            last_reported_btn   = btn_state;
+            const char *dir_str = (dir > 0) ? "FWD" : (dir < 0) ? "REV" : "---";
+            DBG_PRINTF("[ENC] ticks=%7ld  delta=%+4ld  dir=%s  "
+                       "vel=%+7.2f mm/s  btn=%s\n",
+                       (long)ticks, (long)delta, dir_str,
+                       vel_ema, btn_state ? "PRESS" : "open");
+        }
+
+        // Periodic edge-quality telemetry helps diagnose wiring/noise issues.
+        if ((uint32_t)(now_ms - last_edge_log_ms) >= 1000UL) {
+            uint32_t valid = 0;
+            uint32_t rejected = 0;
+            uint32_t invalid = 0;
+            portENTER_CRITICAL(&s_mux);
+            valid = s_valid_edges;
+            rejected = s_rejected_edges;
+            invalid = s_invalid_transitions;
+            s_valid_edges = 0;
+            s_rejected_edges = 0;
+            s_invalid_transitions = 0;
+            portEXIT_CRITICAL(&s_mux);
+
+            DBG_PRINTF("[ENC][QUAL] mode=%s valid=%lu rejected=%lu invalid=%lu debounce_us=%lu ticks=%ld\n",
+#if ENCODER_USE_PULSE_SERVICE
+                          "pulse",
+#elif ENCODER_USE_FULL_STEP
+                          "full",
+#else
+                          "x4",
+#endif
+                          valid, rejected, invalid,
+                          (unsigned long)ENCODER_ISR_DEBOUNCE_US, (long)ticks);
+            last_edge_log_ms = now_ms;
         }
     }
 }

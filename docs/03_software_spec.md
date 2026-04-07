@@ -1,6 +1,6 @@
 # Filament Runout Sensor – Software Specification
 
-**Version**: 1.0 | **Date**: 2026-03-30 | **Author**: tobi01001
+**Version**: 1.1 | **Date**: 2026-03-31 | **Author**: tobi01001
 
 ---
 
@@ -12,7 +12,7 @@
 | Build system | PlatformIO |
 | Board target | `esp32dev` |
 | Platform | `espressif32` |
-| External libraries | `bblanchon/ArduinoJson ^7.0.0` |
+| External libraries | `bblanchon/ArduinoJson ^7.0.0`, `olikraus/U8g2 ^2.35.7` |
 | Serial baud rate | 115 200 |
 
 ### 1.1 Directory Layout
@@ -21,13 +21,17 @@
 firmware/
 ├── platformio.ini          # PlatformIO project config
 └── src/
-    ├── config.h            # Compile-time constants & pin assignments
+    ├── config.h            # Compile-time constants, pin assignments & OLED flags
     ├── types.h             # Shared data structures & enums
     ├── encoder.h/.cpp      # Quadrature ISR + Core 1 speed task
-    ├── moonraker_client.h/.cpp  # HTTP polling of Klipper extruder velocity
+    ├── moonraker.h/.cpp    # WebSocket-based Klipper / Moonraker client
     ├── fault_detector.h/.cpp    # State machine + runout GPIO logic
     ├── nvs_config.h/.cpp   # NVS (Preferences) load / save
+    ├── ota_handler.h/.cpp  # ArduinoOTA + optional GitHub Releases OTA
+    ├── ota_runtime.h/.cpp  # OTA lifecycle integration with wifi_tick()
+    ├── wifi_handler.h/.cpp # Non-blocking WiFi state machine + captive portal
     ├── web_handler.h/.cpp  # Embedded web UI + REST API
+    ├── display_handler.h/.cpp   # SSD1306 OLED display (compiled only if ENABLE_OLED)
     └── main.cpp            # Entry point, task creation
 ```
 
@@ -87,16 +91,20 @@ with `xQueueOverwrite` (single-slot, always latest).
 | Station disconnect | Exponential backoff: 1 s → 2 s → 4 s … max 60 s |
 | AP mode | Web UI accessible at `192.168.4.1` for initial setup |
 
-### 3.2 Moonraker Client (`moonraker_client.cpp`)
+### 3.2 Moonraker Client (`moonraker.cpp`)
 
-Polls every `MOONRAKER_POLL_MS` (200 ms = 5 Hz):
+Uses a persistent WebSocket connection (via the `links2004/WebSockets` library)
+to subscribe to Klipper object updates and query extruder velocity in real time.
 
-```
-GET http://<moonraker_ip>:<moonraker_port>/printer/objects/query?extruder
-```
+**Connection lifecycle:**
+- On WiFi connect, opens `ws://<moonraker_ip>:<moonraker_port>/websocket`
+- Sends `server.info` JSON-RPC request to verify Klippy readiness
+- Once Klippy reports `"ready"`, sends `printer.objects.subscribe` for `extruder`
+- Receives push notifications with `result.status.extruder.velocity` (float, mm/s)
+- Reconnects automatically with exponential back-off (1 s → 10 s) on disconnect
 
-Parses `result.status.extruder.velocity` (float, mm/s).  Returns `0.0`
-on network error or missing field (safe fallback – no spurious fault).
+**Diagnostic counters** (exposed via `/api/diag`): connect/disconnect events,
+subscribe requests, JSON errors, WS probe attempts, and a rolling event log.
 
 ### 3.3 Fault Detector (`fault_detector.cpp`)
 
@@ -150,10 +158,56 @@ IF extruder_velocity < min_ext_vel
   "moonraker_ip": "192.168.1.100",
   "moonraker_port": 7125,
   "wifi_ssid": "MyNetwork",
-  "wifi_pass": "secret"
+  "wifi_pass": "secret",
+  "display_enabled": true
 }
 ```
 `wifi_pass` is only updated if a non-empty value is supplied.
+
+---
+
+### 3.5 OLED Display (`display_handler.cpp`) – optional
+
+Compiled only when `ENABLE_OLED` is defined in `config.h` (default: enabled).
+Uses the **U8g2** library with full-buffer mode (`U8G2_SSD1306_128X64_NONAME_F_HW_I2C`)
+on the ESP32 hardware I²C port (GPIO 21 SDA / GPIO 22 SCL, address `0x3C`).
+
+All I²C/display calls run exclusively from Core 0 so no additional mutex is needed
+for the display bus.
+
+#### Display layout (128×64 pixels)
+
+```
+┌──────────────────────────────┐
+│ PRINTING                     │  ← 8×13 bold font, title bar (16 px)
+├──────────────────────────────┤  ← 1 px separator line
+│ Enc:  3.47 mm/s              │  ← 6×10 font
+│ Ext:  3.50 mm/s              │
+│ Tck:    12480 >              │  ← tick count + direction symbol
+│ 192.168.1.42                 │  ← IP address (or "WiFi offline")
+└──────────────────────────────┘
+```
+
+**FAULT state**: the title bar alternates between an inverted white box with black
+text and normal text at 1 Hz (each `display_update()` call, called every
+`OLED_UPDATE_MS` = 100 ms).
+
+#### Compile-time control
+
+| Symbol | Location | Effect |
+|--------|----------|--------|
+| `#define ENABLE_OLED` | `config.h` | Include display code (default on) |
+| *(comment out)* | `config.h` | Exclude driver entirely |
+| `OLED_SDA_PIN` / `OLED_SCL_PIN` | `config.h` | I²C pin assignment |
+| `OLED_I2C_ADDR` | `config.h` | I²C address (0x3C or 0x3D) |
+| `OLED_UPDATE_MS` | `config.h` | Refresh period (default 100 ms) |
+| `OLED_DEFAULT_EN` | `config.h` | First-boot default (true) |
+
+#### Runtime control
+
+`config.display_enabled` (persisted in NVS key `disp_en`) can be toggled
+at any time via the web interface without re-flashing.  Setting it `false`
+calls `u8g2.setPowerSave(1)` to blank the display and halt I²C traffic.
 
 ---
 
@@ -171,6 +225,7 @@ Uses ESP32 `Preferences` library (namespace `"filsns"`, max 15 chars).
 | `mr_port` | uint32 | 7125 |
 | `wifi_ssid` | string | *(empty)* |
 | `wifi_pass` | string | *(empty)* |
+| `disp_en` | bool | `true` |
 
 On first boot (namespace missing) all defaults are written to NVS.
 
@@ -196,6 +251,7 @@ struct SensorConfig {
     uint16_t moonraker_port;
     char     wifi_ssid[64];
     char     wifi_pass[64];
+    bool     display_enabled;   // enable/disable SSD1306 OLED at runtime
 };
 
 struct SensorStatus {
@@ -214,13 +270,14 @@ struct SensorStatus {
 
 | Region | Allocated | Notes |
 |--------|-----------|-------|
-| Core 0 task stack | 8 192 B | WiFi / HTTP headroom |
+| Core 0 task stack | 10 240 B (OLED on) / 8 192 B (OLED off) | WiFi / HTTP / display headroom |
 | Core 1 task stack | 4 096 B | Minimal – no heap alloc in ISR |
 | Encoder queue | 1 × `sizeof(EncoderData)` ≈ 24 B | |
 | ArduinoJson document | ~512 B on stack (Moonraker parse) | |
-| Embedded HTML | ~6 KB in flash (PROGMEM) | |
+| U8g2 full-frame buffer | 1 024 B heap (128×64 / 8) | Only when `ENABLE_OLED` |
+| Embedded HTML | ~8 KB in flash (PROGMEM) | Slightly larger with OLED toggle |
 | WiFi stack (IDF) | ~100 KB heap | ESP-IDF internal |
-| **Total heap target** | **< 200 KB** | |
+| **Total heap target** | **< 210 KB** | |
 
 ---
 
@@ -238,4 +295,12 @@ business logic:
 #define DEFAULT_CAL_FACTOR 0.01f
 #define DEFAULT_TIMEOUT_MS 2000UL
 #define EMA_ALPHA          0.3f
+
+// OLED display (comment out to disable entirely):
+#define ENABLE_OLED
+#define OLED_SDA_PIN    21
+#define OLED_SCL_PIN    22
+#define OLED_I2C_ADDR   0x3C
+#define OLED_UPDATE_MS  500UL
+#define OLED_DEFAULT_EN true
 ```
