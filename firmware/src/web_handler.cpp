@@ -144,6 +144,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
         <input type="password" id="ota-pass" maxlength="31" placeholder="leave blank to keep current"/>
       </div>
     </div>
+    <p style="font-size:.75rem;color:#a60;margin:4px 0 6px">&#9432; OTA hostname and password changes require a device restart to take effect.</p>
     <label>Fault GCODE <span style="color:#666;font-size:.75rem">(sent to Moonraker via WebSocket on runout)</span></label>
     <input type="text" id="fault-gcode" maxlength="63" placeholder="PAUSE"/>
     <div class="toggle-row">
@@ -155,6 +156,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
       <label for="disp-en">Enable OLED display (SSD1306 128&#x00D7;64)</label>
     </div>
     <button class="btn-save" onclick="saveConfig()">Save &amp; Apply</button>
+    <button class="btn-reset" onclick="rebootDevice()" style="margin-top:6px">Restart Device</button>
     <div id="msg"></div>
   </div>
 
@@ -308,6 +310,14 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
       fetch('/api/reset', {method:'POST'})
         .then(r=>r.json())
         .then(d=>showMsg(d.ok ? '✓ Fault cleared' : '✗ '+d.error, d.ok))
+        .catch(()=>showMsg('✗ Request failed', false));
+    }
+
+    function rebootDevice() {
+      if (!confirm('Restart the device now?\nThe page will reload automatically after ~5 seconds.')) return;
+      fetch('/api/reboot', {method:'POST'})
+        .then(r=>r.json())
+        .then(()=>{ showMsg('⟳ Restarting…', true); setTimeout(()=>location.reload(), 5000); })
         .catch(()=>showMsg('✗ Request failed', false));
     }
 
@@ -612,6 +622,14 @@ static void handle_reset() {
     s_server.send(200, "application/json", "{\"ok\":true}");
 }
 
+static void handle_reboot() {
+    // Send the response first so the client receives the confirmation before
+    // the device resets.  The short delay gives the TCP stack time to flush.
+    s_server.send(200, "application/json", "{\"ok\":true}");
+    delay(100);
+    ESP.restart();
+}
+
 static void handle_calibrate_get() {
     CalibrationStatus cal{};
     fault_detector_get_cal_status(&cal);
@@ -848,6 +866,7 @@ void web_init(SemaphoreHandle_t status_mutex,
     s_server.on("/api/sensor",     HTTP_GET,  handle_sensor_get);
     s_server.on("/api/sensor",     HTTP_POST, handle_sensor_post);
     s_server.on("/api/reset",      HTTP_POST, handle_reset);
+    s_server.on("/api/reboot",     HTTP_POST, handle_reboot);
     s_server.on("/api/calibrate",  HTTP_GET,  handle_calibrate_get);
     s_server.on("/api/calibrate",  HTTP_POST, handle_calibrate_post);
     s_server.on("/api/ota",        HTTP_GET,  handle_ota_get);

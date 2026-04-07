@@ -81,8 +81,19 @@ void goto_sleep(uint16_t seconds)
   Serial.println("Disabling Bluetooth controller...");
   esp_bt_controller_disable();
 
-  // setup the sleep time
-  esp_sleep_enable_timer_wakeup(1000000 * seconds);
+  // Guard against 32-bit integer overflow in the microsecond conversion.
+  // The product 1000000 × seconds must fit inside a uint32_t
+  // (UINT32_MAX = 4 294 967 295), so the safe upper bound is
+  // UINT32_MAX / 1 000 000 = 4 294 seconds (~71 minutes).
+  // Values above that are clamped rather than using a 64-bit literal.
+  static constexpr uint16_t MAX_SLEEP_SECONDS = 4294U;
+  if (seconds > MAX_SLEEP_SECONDS) {
+    Serial.printf("[WARN] goto_sleep: clamping %u s to %u s to avoid overflow\n",
+                  (unsigned)seconds, (unsigned)MAX_SLEEP_SECONDS);
+    seconds = MAX_SLEEP_SECONDS;
+  }
+  const uint32_t sleep_us = (uint32_t)seconds * 1000000UL;
+  esp_sleep_enable_timer_wakeup(sleep_us);
 
   // Go to sleep now.
 

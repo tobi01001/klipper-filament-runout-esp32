@@ -53,6 +53,11 @@ void ota_runtime_tick(bool wifi_connected) {
         char ota_host[32] = {0};
         char ota_pass[32] = {0};
         snapshot_ota_credentials(ota_host, sizeof(ota_host), ota_pass, sizeof(ota_pass));
+        // ArduinoOTA is initialised once per WiFi connection.  If the user
+        // changes ota_hostname or ota_password via the web UI, the new values
+        // will not take effect until the device is rebooted (or WiFi
+        // reconnects).  Use the "Restart Device" button in the web UI after
+        // saving new OTA credentials to apply the change.
         ota_init(ota_host, ota_pass);
         s_initialized = true;
     }

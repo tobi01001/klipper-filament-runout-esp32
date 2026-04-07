@@ -23,6 +23,17 @@ static uint32_t s_backoff_ms         = 1000;
 static bool     s_ap_active          = false;
 static uint8_t  s_last_disc_reason   = 0;
 
+// Phase state for the non-blocking STA-reset sequence.
+// start_sta_attempt() initiates the sequence; wifi_tick() advances it using
+// timestamps instead of vTaskDelay() so the Core 0 loop is never blocked.
+enum class StaPhase : uint8_t {
+    IDLE,            // no active sequence
+    WAIT_AFTER_DISC, // WiFi.disconnect() done – waiting 60 ms before WIFI_OFF
+    WAIT_AFTER_OFF,  // WiFi.mode(WIFI_OFF) done – waiting 60 ms before WIFI_STA
+};
+static StaPhase  s_sta_phase    = StaPhase::IDLE;
+static uint32_t  s_sta_phase_ms = 0;  // millis() timestamp when phase was entered
+
 static DNSServer s_dns;
 
 struct WifiTelemetry {
@@ -92,7 +103,7 @@ static void stop_captive_portal_ap() {
     s_dns.stop();
     WiFi.softAPdisconnect(true);
     s_ap_active = false;
-    Serial.println("[WiFi] Captive portal AP stopped (STA connected)");
+    Serial.println("[WiFi] Captive portal AP stopped");
 }
 
 void disconnect_WiFi(bool wifi_off = true)
@@ -168,28 +179,22 @@ static void start_sta_attempt(const SensorConfig &cfg) {
     Serial.println("[WiFi] Resetting WiFi state ...");
     s_tm.connect_attempts++;
 
+    // Stop the captive portal AP before changing WiFi mode so that s_ap_active
+    // stays consistent with the actual hardware state.  Without this, the flag
+    // would remain true while the AP is effectively off, causing subsequent
+    // calls to start_captive_portal_ap() to silently skip the restart.
+    stop_captive_portal_ap();
+
     WiFi.persistent(false);
     WiFi.setSleep(false);
     WiFi.disconnect(false, false);
-    vTaskDelay(pdMS_TO_TICKS(60));
 
-    Serial.println("[WiFi] Starting station mode in WIFI_OFF ...");
-    WiFi.mode(WIFI_OFF);
-    vTaskDelay(pdMS_TO_TICKS(60));
+    // Kick off the non-blocking 2-phase reset sequence.
+    // wifi_tick() will advance through WAIT_AFTER_DISC → WAIT_AFTER_OFF using
+    // timestamps (60 ms each) so the Core 0 loop is never delayed here.
+    s_sta_phase    = StaPhase::WAIT_AFTER_DISC;
+    s_sta_phase_ms = millis();
 
-    Serial.println("[WiFi] Enabling station mode ...");
-    if (!WiFi.mode(WIFI_STA)) {
-        Serial.println("[WiFi] Failed to switch to WIFI_STA, retrying later");
-        s_connecting      = false;
-        s_next_attempt_ms = millis() + s_backoff_ms;
-        return;
-    }
-
-    WiFi.setAutoReconnect(true);
-    WiFi.begin(cfg.wifi_ssid, cfg.wifi_pass);
-
-    s_connect_started_ms = millis();
-    s_connecting = true;
     update_status(false, "0.0.0.0");
 
     if (s_status_mutex && xSemaphoreTake(s_status_mutex, pdMS_TO_TICKS(20)) == pdTRUE) {
@@ -216,6 +221,8 @@ void wifi_init(SemaphoreHandle_t status_mutex,
     s_backoff_ms         = 1000;
     s_ap_active          = false;
     s_last_disc_reason   = 0;
+    s_sta_phase          = StaPhase::IDLE;
+    s_sta_phase_ms       = 0;
     memset(&s_tm, 0, sizeof(s_tm));
 
     WiFi.onEvent(on_wifi_event);
@@ -240,6 +247,7 @@ void wifi_tick() {
         if (!s_sta_connected_flag) {
             s_sta_connected_flag = true;
             s_connecting = false;
+            s_sta_phase  = StaPhase::IDLE;  // abort any pending phase
             s_backoff_ms = 1000;
             s_tm.connect_successes++;
             const String ip = WiFi.localIP().toString();
@@ -255,6 +263,35 @@ void wifi_tick() {
         s_sta_connected_flag = false;
         update_status(false, "0.0.0.0");
         DBG_PRINTF("[WiFi] Disconnected (status=%d)\n", (int)wl);
+    }
+
+    // ── Non-blocking STA-reset phase sequence ─────────────────────────────────
+    // start_sta_attempt() initiates this; each wifi_tick() call advances through
+    // WAIT_AFTER_DISC → WAIT_AFTER_OFF → (s_connecting=true) without blocking.
+    if (s_sta_phase != StaPhase::IDLE) {
+        const uint32_t elapsed = (uint32_t)(now_ms - s_sta_phase_ms);
+        if (s_sta_phase == StaPhase::WAIT_AFTER_DISC && elapsed >= 60U) {
+            Serial.println("[WiFi] Starting station mode in WIFI_OFF ...");
+            WiFi.mode(WIFI_OFF);
+            s_sta_phase    = StaPhase::WAIT_AFTER_OFF;
+            s_sta_phase_ms = now_ms;
+        } else if (s_sta_phase == StaPhase::WAIT_AFTER_OFF && elapsed >= 60U) {
+            Serial.println("[WiFi] Enabling station mode ...");
+            if (!WiFi.mode(WIFI_STA)) {
+                Serial.println("[WiFi] Failed to switch to WIFI_STA, retrying later");
+                s_sta_phase       = StaPhase::IDLE;
+                s_connecting      = false;
+                s_next_attempt_ms = now_ms + s_backoff_ms;
+            } else {
+                WiFi.setAutoReconnect(true);
+                WiFi.begin(cfg.wifi_ssid, cfg.wifi_pass);
+                s_sta_phase          = StaPhase::IDLE;
+                s_connect_started_ms = now_ms;
+                s_connecting         = true;
+            }
+        }
+        telemetry_log_periodic(wl);
+        return;
     }
 
     if (s_connecting) {
