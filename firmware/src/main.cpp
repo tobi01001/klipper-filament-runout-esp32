@@ -172,8 +172,9 @@ void setup() {
     // Load persistent configuration from NVS
     nvs_load(g_config);
 
-    // Initialise fault detector (configures runout GPIO)
-    fault_detector_init(g_status_mutex, g_encoder_queue, &g_config, &g_status);
+    // Initialise fault detector (configures runout GPIO); wire GCODE sender
+    fault_detector_init(g_status_mutex, g_encoder_queue, &g_config, &g_status,
+                        moonraker_send_gcode);
 
     if(firstrun) {
         Serial.println("[C0] First run detected - Going to sleep for a second");

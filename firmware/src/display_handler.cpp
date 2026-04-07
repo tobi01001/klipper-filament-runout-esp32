@@ -5,7 +5,6 @@
 #include <U8g2lib.h>
 #include <Wire.h>
 #include <math.h>
-#include <stdio.h>
 #include <string.h>
 
 #include "config.h"
@@ -65,6 +64,10 @@ static bool status_changed(const SensorStatus &a, const SensorStatus &b) {
     if (a.state != b.state) return true;
     if (a.fault_active != b.fault_active) return true;
     if (a.wifi_connected != b.wifi_connected) return true;
+    if (a.moonraker_connected != b.moonraker_connected) return true;
+    if (a.moonraker_subscribed != b.moonraker_subscribed) return true;
+    if (a.moonraker_stale != b.moonraker_stale) return true;
+    if (strncmp(a.klippy_state, b.klippy_state, sizeof(a.klippy_state)) != 0) return true;
     if (strncmp(a.ip_address, b.ip_address, sizeof(a.ip_address)) != 0) return true;
 
     if (a.encoder.tick_count != b.encoder.tick_count) return true;
@@ -73,6 +76,30 @@ static bool status_changed(const SensorStatus &a, const SensorStatus &b) {
     if (fabsf(a.extruder_vel - b.extruder_vel) >= 0.01f) return true;
 
     return false;
+}
+
+// Draw Moonraker transport indicator at top-right.
+// Solid = live updates, hollow blinking = degraded, X = disconnected.
+static void draw_moonraker_indicator(const SensorStatus &snap, bool blink_phase) {
+    const uint8_t cx = OLED_WIDTH - 8;
+    const uint8_t cy = 8;
+
+    if (snap.moonraker_connected && snap.moonraker_subscribed && !snap.moonraker_stale) {
+        s_display.drawDisc(cx, cy, 4, U8G2_DRAW_ALL);
+        return;
+    }
+
+    if (snap.moonraker_connected) {
+        if (blink_phase) {
+            s_display.drawCircle(cx, cy, 4, U8G2_DRAW_ALL);
+        }
+        return;
+    }
+
+    if (blink_phase) {
+        s_display.drawLine(cx - 3, cy - 3, cx + 3, cy + 3);
+        s_display.drawLine(cx - 3, cy + 3, cx + 3, cy - 3);
+    }
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -162,12 +189,14 @@ void display_update() {
     }
 
     const bool is_fault = (snap.state == SystemState::FAULT);
+    const bool blink_phase = ((millis() / 500U) & 1U) == 0U;
 
     // ── Render ────────────────────────────────────────────────────────────────
     s_display.clearBuffer();
 
     // Title bar (state name)
     draw_title(state_name(snap.state), is_fault, false);
+    draw_moonraker_indicator(snap, blink_phase);
 
     // Separator below title
     draw_separator(16);
@@ -176,35 +205,41 @@ void display_update() {
     s_display.setFont(u8g2_font_6x10_tf);
     s_display.setDrawColor(1);
 
-    char buf[24];  // 128 / 6 = 21 chars max per line + null + guard bytes
-
-    // Row 1 – encoder velocity (clamped to ±9999.99 so format never exceeds buffer)
+    // Row 1 – encoder velocity
     const float enc_vel_disp = fminf(fmaxf(snap.encoder.velocity_mm_s, -9999.99f), 9999.99f);
-    snprintf(buf, sizeof(buf), "Enc:%7.2f mm/s",
-             static_cast<double>(enc_vel_disp));
-    s_display.drawStr(0, 28, buf);
+    s_display.setCursor(0, 28);
+    s_display.print("Enc:");
+    s_display.print(enc_vel_disp, 2);
+    s_display.print(" mm/s");
 
-    // Row 2 – extruder velocity from Moonraker (clamped to ±9999.99)
+    // Row 2 – extruder velocity from Moonraker
     const float ext_vel_disp = fminf(fmaxf(snap.extruder_vel, -9999.99f), 9999.99f);
-    snprintf(buf, sizeof(buf), "Ext:%7.2f mm/s",
-             static_cast<double>(ext_vel_disp));
-    s_display.drawStr(0, 39, buf);
+    s_display.setCursor(0, 39);
+    s_display.print("Ext:");
+    s_display.print(ext_vel_disp, 2);
+    s_display.print(" mm/s");
 
     // Row 3 – tick count + direction symbol
     const char dir_sym = (snap.encoder.direction > 0) ? '>' :
                          (snap.encoder.direction < 0) ? '<' : '=';
-    // Fit 21 chars: "Tck:XXXXXXXX D" where D is dir symbol
-    snprintf(buf, sizeof(buf), "Tck:%8ld %c",
-             static_cast<long>(snap.encoder.tick_count), dir_sym);
-    s_display.drawStr(0, 50, buf);
+    s_display.setCursor(0, 50);
+    s_display.print("Tck:");
+    s_display.print(static_cast<long>(snap.encoder.tick_count));
+    s_display.print(' ');
+    s_display.print(dir_sym);
 
     // Row 4 – IP address (or offline notice)
     if (snap.wifi_connected) {
-        snprintf(buf, sizeof(buf), "%s", snap.ip_address);
+        const char *mr = snap.moonraker_connected
+                       ? (snap.moonraker_stale ? "MR:STALE" : "MR:LIVE")
+                       : "MR:OFF";
+        s_display.setCursor(0, 61);
+        s_display.print(snap.ip_address);
+        s_display.print(' ');
+        s_display.print(mr);
     } else {
-        snprintf(buf, sizeof(buf), "WiFi offline");
+        s_display.drawStr(0, 61, "WiFi offline");
     }
-    s_display.drawStr(0, 61, buf);
 
     s_display.sendBuffer();
 
@@ -237,9 +272,9 @@ void display_show_ota_progress(uint8_t percent) {
     draw_separator(16);
 
     // Percentage label
-    char buf[8];
-    snprintf(buf, sizeof(buf), "%3u%%", pct);
-    s_display.drawStr(44, 36, buf);
+    s_display.setCursor(44, 36);
+    s_display.print((unsigned)pct);
+    s_display.print('%');
 
     // Progress bar – 120 px wide, 12 px tall, 4 px from each edge
     const uint8_t bar_x = 4;

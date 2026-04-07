@@ -1,5 +1,6 @@
 #include "encoder.h"
 #include "config.h"
+#include "debug_log.h"
 
 // ─── ISR-visible globals ──────────────────────────────────────────────────────
 volatile uint32_t g_last_motion_ms = 0;
@@ -111,8 +112,8 @@ void encoder_init(QueueHandle_t queue, const SensorConfig *cfg) {
 
 #if ENCODER_USE_PULSE_SERVICE
     attachInterrupt(digitalPinToInterrupt(PIN_ENCODER_CHA), encoder_isr, RISING);
-    Serial.printf("[ENC] Pulse service initialised (ChA=%d RISING, Btn=%d)\n",
-                  PIN_ENCODER_CHA, PIN_ENCODER_BTN);
+    DBG_PRINTF("[ENC] Pulse service initialised (ChA=%d RISING, Btn=%d)\n",
+               PIN_ENCODER_CHA, PIN_ENCODER_BTN);
 #else
     // Capture initial state so first ISR transition is interpreted correctly
     const uint8_t chA  = static_cast<uint8_t>(digitalRead(PIN_ENCODER_CHA));
@@ -122,8 +123,8 @@ void encoder_init(QueueHandle_t queue, const SensorConfig *cfg) {
     attachInterrupt(digitalPinToInterrupt(PIN_ENCODER_CHA), encoder_isr, CHANGE);
     attachInterrupt(digitalPinToInterrupt(PIN_ENCODER_CHB), encoder_isr, CHANGE);
 
-    Serial.printf("[ENC] Quadrature service initialised (ChA=%d, ChB=%d, Btn=%d)\n",
-                  PIN_ENCODER_CHA, PIN_ENCODER_CHB, PIN_ENCODER_BTN);
+    DBG_PRINTF("[ENC] Quadrature service initialised (ChA=%d, ChB=%d, Btn=%d)\n",
+               PIN_ENCODER_CHA, PIN_ENCODER_CHB, PIN_ENCODER_BTN);
 #endif
 }
 
@@ -161,10 +162,33 @@ void encoder_task(void * /*param*/) {
         last_ticks = ticks;
         last_time  = now_ms;
 
-        // Calculate instantaneous velocity, apply EMA filter
+        // Calculate velocity using a sliding window tick accumulator.
+        // A per-20 ms median on velocity fails at low speeds: most windows have
+        // delta=0 (e.g. 11 ticks/s gives 0.22 ticks/window), so the median is
+        // permanently zero.  Summing ticks over N windows gives a meaningful
+        // velocity even at very low tick rates, while spreading a single noise
+        // spike across N windows suppresses it adequately.
         const float cal_factor = s_cfg ? s_cfg->cal_factor : DEFAULT_CAL_FACTOR;
-        const float raw_vel    = (static_cast<float>(delta) * cal_factor) /
-                                 (static_cast<float>(dt_ms) / 1000.0f);
+
+        static int32_t  s_win_ticks[VEL_MEDIAN_N] = {};
+        static uint32_t s_win_dt_ms[VEL_MEDIAN_N]  = {};
+        static uint8_t  s_win_idx = 0;
+
+        s_win_ticks[s_win_idx] = delta;
+        s_win_dt_ms[s_win_idx] = dt_ms;
+        s_win_idx = (s_win_idx + 1) % VEL_MEDIAN_N;
+
+        int32_t  win_tick_sum = 0;
+        uint32_t win_time_ms  = 0;
+        for (uint8_t i = 0; i < VEL_MEDIAN_N; ++i) {
+            win_tick_sum += s_win_ticks[i];
+            win_time_ms  += s_win_dt_ms[i];
+        }
+        const float raw_vel = (win_time_ms > 0)
+            ? (static_cast<float>(win_tick_sum) * cal_factor /
+               (static_cast<float>(win_time_ms) / 1000.0f))
+            : 0.0f;
+
         vel_ema = EMA_ALPHA * raw_vel + (1.0f - EMA_ALPHA) * vel_ema;
 
         // Button debounce: shift in current reading; stable only when all 8 bits agree
@@ -194,10 +218,10 @@ void encoder_task(void * /*param*/) {
             last_reported_ticks = ticks;
             last_reported_btn   = btn_state;
             const char *dir_str = (dir > 0) ? "FWD" : (dir < 0) ? "REV" : "---";
-            Serial.printf("[ENC] ticks=%7ld  delta=%+4ld  dir=%s  "
-                          "vel=%+7.2f mm/s  btn=%s\n",
-                          (long)ticks, (long)delta, dir_str,
-                          vel_ema, btn_state ? "PRESS" : "open");
+            DBG_PRINTF("[ENC] ticks=%7ld  delta=%+4ld  dir=%s  "
+                       "vel=%+7.2f mm/s  btn=%s\n",
+                       (long)ticks, (long)delta, dir_str,
+                       vel_ema, btn_state ? "PRESS" : "open");
         }
 
         // Periodic edge-quality telemetry helps diagnose wiring/noise issues.
@@ -214,7 +238,7 @@ void encoder_task(void * /*param*/) {
             s_invalid_transitions = 0;
             portEXIT_CRITICAL(&s_mux);
 
-            Serial.printf("[ENC][QUAL] mode=%s valid=%lu rejected=%lu invalid=%lu debounce_us=%lu ticks=%ld\n",
+            DBG_PRINTF("[ENC][QUAL] mode=%s valid=%lu rejected=%lu invalid=%lu debounce_us=%lu ticks=%ld\n",
 #if ENCODER_USE_PULSE_SERVICE
                           "pulse",
 #elif ENCODER_USE_FULL_STEP

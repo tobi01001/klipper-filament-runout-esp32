@@ -32,15 +32,19 @@
 #include "ota_handler.h"
 #include "config.h"
 #include "display_handler.h"
+#include "debug_log.h"
 
 #include <ArduinoOTA.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/semphr.h>
+
+#if ENABLE_GITHUB_OTA
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <HTTPUpdate.h>
 #include <WiFiClientSecure.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
-#include <freertos/semphr.h>
+#endif
 
 // ─── Module state ──────────────────────────────────────────────────────────────
 static volatile const char *s_status         = "idle";
@@ -52,6 +56,8 @@ static SemaphoreHandle_t    s_tag_mutex      = nullptr;
 // ─── Task mode ────────────────────────────────────────────────────────────────
 // When true the task only checks the latest release without flashing.
 static volatile bool        s_check_only     = false;
+
+#if ENABLE_GITHUB_OTA
 
 // ─── Version comparison ────────────────────────────────────────────────────────
 /**
@@ -78,7 +84,7 @@ static bool version_is_newer(const char *tag) {
 // ─── GitHub OTA background task ───────────────────────────────────────────────
 static void github_update_task(void * /*param*/) {
     s_status = "checking";
-    Serial.printf("[OTA] Checking GitHub releases at %s\n", GITHUB_API_URL);
+    DBG_PRINTF("[OTA] Checking GitHub releases at %s\n", GITHUB_API_URL);
 
     // ── Step 1: Fetch the latest release info ──────────────────────────────
     WiFiClientSecure api_client;
@@ -92,7 +98,7 @@ static void github_update_task(void * /*param*/) {
 
     const int api_code = http.GET();
     if (api_code != HTTP_CODE_OK) {
-        Serial.printf("[OTA] GitHub API error: HTTP %d\n", api_code);
+        DBG_PRINTF("[OTA] GitHub API error: HTTP %d\n", api_code);
         http.end();
         s_status = "failed";
         s_task_running = false;
@@ -114,7 +120,7 @@ static void github_update_task(void * /*param*/) {
     http.end();
 
     if (json_err) {
-        Serial.printf("[OTA] JSON parse error: %s\n", json_err.c_str());
+        DBG_PRINTF("[OTA] JSON parse error: %s\n", json_err.c_str());
         s_status = "failed";
         s_task_running = false;
         vTaskDelete(nullptr);
@@ -128,7 +134,7 @@ static void github_update_task(void * /*param*/) {
         xSemaphoreGive(s_tag_mutex);
     }
 
-    Serial.printf("[OTA] Latest release: %s  (current: %s)\n",
+    DBG_PRINTF("[OTA] Latest release: %s  (current: %s)\n",
                   tag, FIRMWARE_VERSION);
 
     // ── Step 3: Version check ──────────────────────────────────────────────
@@ -143,7 +149,7 @@ static void github_update_task(void * /*param*/) {
     // If this is a check-only request, report that an update is available
     // and let the user confirm before flashing.
     if (s_check_only) {
-        Serial.printf("[OTA] Update available: %s -> confirm via web UI to apply\n", tag);
+        DBG_PRINTF("[OTA] Update available: %s -> confirm via web UI to apply\n", tag);
         s_status = "update-available";
         s_task_running = false;
         vTaskDelete(nullptr);
@@ -171,7 +177,7 @@ static void github_update_task(void * /*param*/) {
         return;
     }
 
-    Serial.printf("[OTA] Downloading: %s\n", asset_url);
+    DBG_PRINTF("[OTA] Downloading: %s\n", asset_url);
     s_status = "updating";
 
     // ── Step 5: Stream firmware via HTTPUpdate ─────────────────────────────
@@ -217,7 +223,7 @@ static void github_update_task(void * /*param*/) {
             break;
         case HTTP_UPDATE_FAILED:
         default:
-            Serial.printf("[OTA] Update failed: %s\n",
+            DBG_PRINTF("[OTA] Update failed: %s\n",
                           httpUpdate.getLastErrorString().c_str());
             s_status = "failed";
 #ifdef ENABLE_OLED
@@ -229,6 +235,7 @@ static void github_update_task(void * /*param*/) {
     s_task_running = false;
     vTaskDelete(nullptr);
 }
+#endif
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 void ota_init(const char *hostname, const char *password) {
@@ -259,14 +266,14 @@ void ota_init(const char *hostname, const char *password) {
     });
 
     ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-        Serial.printf("[OTA] Progress: %u%%\r", progress * 100 / total);
+        DBG_PRINTF("[OTA] Progress: %u%%\r", progress * 100 / total);
 #ifdef ENABLE_OLED
         display_show_ota_progress((uint8_t)(progress * 100 / total));
 #endif
     });
 
     ArduinoOTA.onError([](ota_error_t error) {
-        Serial.printf("[OTA] Error[%u]: ", error);
+        DBG_PRINTF("[OTA] Error[%u]: ", error);
         switch (error) {
             case OTA_AUTH_ERROR:    Serial.println("Auth failed");       break;
             case OTA_BEGIN_ERROR:   Serial.println("Begin failed");      break;
@@ -282,7 +289,7 @@ void ota_init(const char *hostname, const char *password) {
     });
 
     ArduinoOTA.begin();
-    Serial.printf("[OTA] ArduinoOTA ready – hostname: %s\n", hostname);
+    DBG_PRINTF("[OTA] ArduinoOTA ready – hostname: %s\n", hostname);
 }
 
 void ota_handle() {
@@ -290,6 +297,7 @@ void ota_handle() {
 }
 
 void ota_github_check_request() {
+#if ENABLE_GITHUB_OTA
     if (s_task_running) {
         Serial.println("[OTA] Task already running – check request ignored");
         return;
@@ -312,9 +320,13 @@ void ota_github_check_request() {
         s_task_running = false;
         s_status = "failed";
     }
+#else
+    s_status = "disabled";
+#endif
 }
 
 void ota_github_update_request() {
+#if ENABLE_GITHUB_OTA
     if (s_task_running) {
         Serial.println("[OTA] Update already in progress – request ignored");
         return;
@@ -342,6 +354,9 @@ void ota_github_update_request() {
         s_task_running = false;
         s_status = "failed";
     }
+#else
+    s_status = "disabled";
+#endif
 }
 
 const char *ota_get_status() {

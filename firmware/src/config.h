@@ -43,6 +43,11 @@
 #define ENCODER_USE_PULSE_SERVICE false // true: count GPIO25 pulses only (speed-focused, no reverse direction)
 #define ENCODER_USE_FULL_STEP false // true: robust full-step decode, false: x4 edge decode
 #define MOONRAKER_POLL_MS  200UL  // Core 0 Moonraker poll period (5 Hz)
+#define MOONRAKER_INFO_MS  2000UL // JSON-RPC server.info interval while not ready
+#define MOONRAKER_SUB_RETRY_MS 2000UL // Retry interval for subscribe request
+#define MOONRAKER_STALE_MS 2500UL // No extruder update beyond this => stale
+#define MOONRAKER_WS_RECONNECT_MIN_MS 1000UL // Initial reconnect delay
+#define MOONRAKER_WS_RECONNECT_MAX_MS 10000UL // Maximum reconnect delay
 #define CORE0_LOOP_MS      10UL   // Core 0 main loop tick (100 Hz)
 
 // ─── Default Runtime Values (overridden by NVS on boot) ──────────────────────
@@ -71,6 +76,16 @@
 #define DEFAULT_MOTION_THRESH  1            // minimum |ticks| to count as motion
 #define DEFAULT_MOONRAKER_IP   "192.168.1.100"
 #define DEFAULT_MOONRAKER_PORT 7125
+#define DEFAULT_SENSOR_ENABLED true
+#define DEFAULT_FAULT_GCODE    "PAUSE"     // GCODE sent to Moonraker via WebSocket on fault
+
+// ─── Auto-Calibration ────────────────────────────────────────────────────────
+#define CAL_EXTRUDE_MM         50.0f      // default calibration extrude distance (mm)
+#define CAL_EXTRUDE_SPEED_MMPM 300.0f     // default extrude speed (mm/min = 5 mm/s)
+#define CAL_WAIT_START_MS      3000UL     // max ms to wait for encoder motion to begin
+#define CAL_WAIT_STOP_MS       30000UL    // max ms to wait for motion to stop
+#define CAL_SETTLE_MS          400UL      // ms of near-zero velocity before result is computed
+#define CAL_ENC_IDLE_MS        600UL      // ms of encoder ISR silence required to declare motion stopped
 
 // ─── EMA Velocity Filter ─────────────────────────────────────────────────────
 #define EMA_ALPHA  0.3f   // exponential moving average weight (0 = no response)
@@ -86,6 +101,11 @@
 
 // ─── Serial Debug ─────────────────────────────────────────────────────────────
 #define SERIAL_BAUD                115200
+#define DEBUG_LOG_ENABLED          0      // 1 enables DBG_* macros in debug_log.h
+
+// ─── Velocity Median Filter ──────────────────────────────────────────────────
+// Odd integer ≥ 3. Larger = better spike rejection, slightly more latency.
+#define VEL_MEDIAN_N  5
 
 
 // ─── NVS Namespace & Keys ────────────────────────────────────────────────────
@@ -101,6 +121,8 @@
 #define NVS_KEY_PASS     "wifi_pass"
 #define NVS_KEY_OTA_HOST "ota_hostname"
 #define NVS_KEY_OTA_PASS "ota_password"
+#define NVS_KEY_SENSOR_EN "sensor_en"
+#define NVS_KEY_FAULT_GCODE "fault_gcode"
 
 // ─── Firmware Version ─────────────────────────────────────────────────────────
 // Bump this when cutting a new GitHub release so the OTA checker can compare.
@@ -122,6 +144,7 @@
 #define GITHUB_OWNER     "tobi01001"
 #define GITHUB_REPO      "klipper-filament-runout-esp32"
 #define GITHUB_API_URL   "https://api.github.com/repos/" GITHUB_OWNER "/" GITHUB_REPO "/releases/latest"
+#define ENABLE_GITHUB_OTA 0              // 0 removes HTTPS GitHub OTA path and mbedTLS dependency
 
 // Maximum time to wait for the GitHub API or asset download (ms).
 #define OTA_HTTP_TIMEOUT_MS  20000

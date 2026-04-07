@@ -6,6 +6,7 @@
 
 #include "config.h"
 #include "fault_detector.h"
+#include "debug_log.h"
 
 // Shared references from main.
 static SemaphoreHandle_t s_status_mutex = nullptr;
@@ -51,16 +52,16 @@ static void telemetry_log_periodic(wl_status_t wl) {
     }
     s_tm.last_log_ms = now;
 
-    Serial.printf("[WiFi][TLM] wl=%d sta=%u ap=%u attempts=%lu ok=%lu timeouts=%lu disc=%lu reason=%u backoff=%lu\n",
-                  (int)wl,
-                  s_sta_connected_flag ? 1u : 0u,
-                  s_ap_active ? 1u : 0u,
-                  s_tm.connect_attempts,
-                  s_tm.connect_successes,
-                  s_tm.connect_timeouts,
-                  s_tm.disconnect_events,
-                  s_last_disc_reason,
-                  s_backoff_ms);
+    DBG_PRINTF("[WiFi][TLM] wl=%d sta=%u ap=%u attempts=%lu ok=%lu timeouts=%lu disc=%lu reason=%u backoff=%lu\n",
+               (int)wl,
+               s_sta_connected_flag ? 1u : 0u,
+               s_ap_active ? 1u : 0u,
+               s_tm.connect_attempts,
+               s_tm.connect_successes,
+               s_tm.connect_timeouts,
+               s_tm.disconnect_events,
+               s_last_disc_reason,
+               s_backoff_ms);
 }
 
 static void start_captive_portal_ap() {
@@ -78,9 +79,9 @@ static void start_captive_portal_ap() {
     s_dns.start(53, "*", ap_ip);
     s_ap_active = true;
     s_tm.ap_starts++;
-    Serial.printf("[WiFi] Captive portal AP started: ssid=%s ip=%s\n",
-                  WIFI_AP_SSID,
-                  ap_ip.toString().c_str());
+    DBG_PRINTF("[WiFi] Captive portal AP started: ssid=%s ip=%s\n",
+               WIFI_AP_SSID,
+               ap_ip.toString().c_str());
 }
 
 static void stop_captive_portal_ap() {
@@ -163,7 +164,7 @@ static void start_sta_attempt(const SensorConfig &cfg) {
         return;
     }
 
-    Serial.printf("[WiFi] Connecting to '%s' ...\n", cfg.wifi_ssid);
+    DBG_PRINTF("[WiFi] Connecting to '%s' ...\n", cfg.wifi_ssid);
     Serial.println("[WiFi] Resetting WiFi state ...");
     s_tm.connect_attempts++;
 
@@ -242,7 +243,7 @@ void wifi_tick() {
             s_backoff_ms = 1000;
             s_tm.connect_successes++;
             const String ip = WiFi.localIP().toString();
-            Serial.printf("[WiFi] Connected, IP: %s\n", ip.c_str());
+            DBG_PRINTF("[WiFi] Connected, IP: %s\n", ip.c_str());
             update_status(true, ip.c_str());
             stop_captive_portal_ap();
         }
@@ -253,7 +254,7 @@ void wifi_tick() {
     if (s_sta_connected_flag) {
         s_sta_connected_flag = false;
         update_status(false, "0.0.0.0");
-        Serial.printf("[WiFi] Disconnected (status=%d)\n", (int)wl);
+        DBG_PRINTF("[WiFi] Disconnected (status=%d)\n", (int)wl);
     }
 
     if (s_connecting) {
@@ -261,7 +262,7 @@ void wifi_tick() {
             s_connecting = false;
             s_next_attempt_ms = now_ms + s_backoff_ms;
             s_tm.connect_timeouts++;
-            Serial.printf("[WiFi] Connect timeout, retry in %lu ms\n", s_backoff_ms);
+            DBG_PRINTF("[WiFi] Connect timeout, retry in %lu ms\n", s_backoff_ms);
             s_backoff_ms = min<uint32_t>(s_backoff_ms * 2U,
                                          (uint32_t)WIFI_RECONNECT_MAX_MS);
             start_captive_portal_ap();
