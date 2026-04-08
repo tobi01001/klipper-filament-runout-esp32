@@ -158,7 +158,7 @@
 
 // ─── Firmware Version ─────────────────────────────────────────────────────────
 // Bump this when cutting a new GitHub release so the OTA checker can compare.
-#define FIRMWARE_VERSION  "1.0.1"
+#define FIRMWARE_VERSION  "1.0.2"
 
 // ─── OTA (Over-The-Air Update) ────────────────────────────────────────────────
 // mDNS hostname advertised by ArduinoOTA; reachable as <OTA_HOSTNAME>.local on
