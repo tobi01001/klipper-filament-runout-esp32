@@ -26,6 +26,4 @@ jobs:
           cache: pip
 
       - name: Install PlatformIO
-        run: |
-          pip install --upgrade platformio
-          pio pkg install --global --library "me-no-dev/ESPAsyncWebServer"
+        run: pip install --upgrade platformio

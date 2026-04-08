@@ -80,14 +80,20 @@ static void IRAM_ATTR encoder_isr() {
     if (delta != 0) {
         s_step_accum += delta;
         s_valid_edges++;
-        if (s_step_accum >= 3) {
+        // Update the motion timestamp on every valid gray-code transition, not
+        // only when the detent threshold fires.  Without this, the fault timer
+        // would expire during slow extrusion where the encoder moves less than
+        // ENCODER_FULL_STEP_THRESHOLD steps within one fault-timeout window.
+        g_last_motion_ms = static_cast<uint32_t>(millis());
+        if (s_step_accum >= ENCODER_FULL_STEP_THRESHOLD) {
             s_tick_count += 1;
-            s_step_accum = 0;
-            g_last_motion_ms = static_cast<uint32_t>(millis());
-        } else if (s_step_accum <= -3) {
+            // Preserve the remainder instead of resetting to 0.  A detent that
+            // produces 4 gray-code steps would otherwise drop the 4th step;
+            // carrying it forward keeps the long-run tick count accurate.
+            s_step_accum -= ENCODER_FULL_STEP_THRESHOLD;
+        } else if (s_step_accum <= -ENCODER_FULL_STEP_THRESHOLD) {
             s_tick_count -= 1;
-            s_step_accum = 0;
-            g_last_motion_ms = static_cast<uint32_t>(millis());
+            s_step_accum += ENCODER_FULL_STEP_THRESHOLD;
         }
     }
 #else
@@ -170,9 +176,9 @@ void encoder_task(void * /*param*/) {
         // spike across N windows suppresses it adequately.
         const float cal_factor = s_cfg ? s_cfg->cal_factor : DEFAULT_CAL_FACTOR;
 
-        static int32_t  s_win_ticks[VEL_MEDIAN_N] = {};
-        static uint32_t s_win_dt_ms[VEL_MEDIAN_N]  = {};
-        static uint8_t  s_win_idx = 0;
+        static int32_t   s_win_ticks[VEL_MEDIAN_N] = {};
+        static uint32_t  s_win_dt_ms[VEL_MEDIAN_N]  = {};
+        static uint16_t  s_win_idx = 0;  // uint16_t: VEL_MEDIAN_N can exceed 255
 
         s_win_ticks[s_win_idx] = delta;
         s_win_dt_ms[s_win_idx] = dt_ms;
@@ -180,7 +186,7 @@ void encoder_task(void * /*param*/) {
 
         int32_t  win_tick_sum = 0;
         uint32_t win_time_ms  = 0;
-        for (uint8_t i = 0; i < VEL_MEDIAN_N; ++i) {
+        for (uint16_t i = 0; i < VEL_MEDIAN_N; ++i) {
             win_tick_sum += s_win_ticks[i];
             win_time_ms  += s_win_dt_ms[i];
         }
