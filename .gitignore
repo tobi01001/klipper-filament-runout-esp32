@@ -25,3 +25,6 @@ $RECYCLE.BIN/
 *.zip
 *.tar.gz
 *.tar.bz2
+firmware/.vscode/c_cpp_properties.json
+.gitignore
+firmware/.vscode/launch.json
