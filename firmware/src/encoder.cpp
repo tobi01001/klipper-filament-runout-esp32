@@ -80,14 +80,20 @@ static void IRAM_ATTR encoder_isr() {
     if (delta != 0) {
         s_step_accum += delta;
         s_valid_edges++;
-        if (s_step_accum >= 3) {
+        // Update the motion timestamp on every valid gray-code transition, not
+        // only when the detent threshold fires.  Without this, the fault timer
+        // would expire during slow extrusion where the encoder moves less than
+        // ENCODER_FULL_STEP_THRESHOLD steps within one fault-timeout window.
+        g_last_motion_ms = static_cast<uint32_t>(millis());
+        if (s_step_accum >= ENCODER_FULL_STEP_THRESHOLD) {
             s_tick_count += 1;
-            s_step_accum = 0;
-            g_last_motion_ms = static_cast<uint32_t>(millis());
-        } else if (s_step_accum <= -3) {
+            // Preserve the remainder instead of resetting to 0.  A detent that
+            // produces 4 gray-code steps would otherwise drop the 4th step;
+            // carrying it forward keeps the long-run tick count accurate.
+            s_step_accum -= ENCODER_FULL_STEP_THRESHOLD;
+        } else if (s_step_accum <= -ENCODER_FULL_STEP_THRESHOLD) {
             s_tick_count -= 1;
-            s_step_accum = 0;
-            g_last_motion_ms = static_cast<uint32_t>(millis());
+            s_step_accum += ENCODER_FULL_STEP_THRESHOLD;
         }
     }
 #else

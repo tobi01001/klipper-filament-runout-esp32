@@ -47,7 +47,14 @@
 #define ENCODER_UPDATE_MS  20UL   // Core 1 speed calc period (50 Hz)
 #define ENCODER_ISR_DEBOUNCE_US 120UL // Ignore edges closer than this (mechanical bounce guard)
 #define ENCODER_USE_PULSE_SERVICE false // true: count GPIO25 pulses only (speed-focused, no reverse direction)
-#define ENCODER_USE_FULL_STEP false // true: robust full-step decode, false: x4 edge decode
+#define ENCODER_USE_FULL_STEP true  // true: accumulate gray-code steps and count one movement tick per
+                                    //       ENCODER_FULL_STEP_THRESHOLD steps — matches the detent cadence
+                                    //       of a KY-040 (3–4 gray-code steps per mechanical detent).
+                                    //       false: count every individual gray-code edge as a raw tick (x4).
+// Minimum accumulated gray-code steps (absolute) to count as one movement tick.
+// A standard KY-040 generates 3–4 steps per detent; setting this to 3 ensures every
+// detent is counted while also rejecting sub-detent electrical noise.
+#define ENCODER_FULL_STEP_THRESHOLD 3
 #define MOONRAKER_POLL_MS  200UL  // Core 0 Moonraker poll period (5 Hz)
 #define MOONRAKER_INFO_MS  2000UL // JSON-RPC server.info interval while not ready
 #define MOONRAKER_SUB_RETRY_MS 2000UL // Retry interval for subscribe request
@@ -59,25 +66,27 @@
 // ─── Default Runtime Values (overridden by NVS on boot) ──────────────────────
 //
 // ─── Wheel diameter & ticks-per-revolution → cal_factor ─────────────────────
-// The quadrature decoder counts 4 electrical edges per mechanical pulse.
-// If your encoder has N detents per revolution and P pulses per detent:
-//   ENCODER_TICKS_PER_REV = N * P * 4   (full quadrature, both edges, both channels)
+// With ENCODER_USE_FULL_STEP enabled, one tick is counted per mechanical detent
+// (once ENCODER_FULL_STEP_THRESHOLD gray-code steps have accumulated).
+// For a 20-detent KY-040:   ENCODER_TICKS_PER_REV ≈ 20  (1 tick per detent)
 //
-// IMPORTANT: verify ENCODER_TICKS_PER_REV by watching the serial output:
-//   Hold the filament still, rotate the wheel exactly one full revolution slowly,
-//   then read the accumulated tick_count change. That number is your true value.
+// With ENCODER_USE_FULL_STEP disabled (raw x4 mode), every gray-code edge is a
+// tick.  For a 20-detent KY-040:  ENCODER_TICKS_PER_REV ≈ 70–80 raw ticks/rev.
 //
-// Typical cheap 20-detent encoders, 1 pulse/detent, full quadrature → 80 ticks/rev.
-// If yours shows 20 ticks/rev in practice, it uses half-quad internally → use 20.
+// IMPORTANT: always verify by running auto-calibration (web UI → Calibrate) or
+//   by watching the serial output while rotating the wheel exactly one full turn.
+//   The measured tick_count delta is your true ENCODER_TICKS_PER_REV.
+//   Re-run calibration after changing ENCODER_USE_FULL_STEP or ENCODER_FULL_STEP_THRESHOLD.
 //
 #define ENCODER_WHEEL_DIAM_MM   10.0f   // Pinch wheel outer diameter in mm
-#define ENCODER_TICKS_PER_REV   70      // Measured ticks for one full revolution
-                                        // (detents × pulses/detent × 4 for full-quad)
-                                        // Common: 20 detents × 1 pulse × 4 = 80
-                                        //         20 detents × 1 pulse × 1 = 20 (half-quad)
+#define ENCODER_TICKS_PER_REV   20      // Movement ticks per revolution in full-step mode
+                                        // (≈ 1 tick per detent for a 20-detent KY-040).
+                                        // Run auto-calibration to tune this for your setup.
 #define DEFAULT_CAL_FACTOR  (M_PI * ENCODER_WHEEL_DIAM_MM / ENCODER_TICKS_PER_REV)
-// With defaults above: (π × 10) / 70 ≈ 0.4488 mm/tick
-#define DEFAULT_TIMEOUT_MS     2000UL       // ms of no filament motion → fault
+// With defaults above: (π × 10) / 20 ≈ 1.5708 mm/tick
+#define DEFAULT_TIMEOUT_MS     8000UL       // ms of no filament motion → fault
+                                            // At 5 mm/s with a 5 cm sensor-to-extruder offset:
+                                            // transit time ≈ 10 s, so an 8 s timeout fires with ~2 s to spare.
 #define DEFAULT_MIN_EXT_VEL    0.5f         // mm/s extruder velocity → "printing"
 #define DEFAULT_MOTION_THRESH  1            // minimum |ticks| to count as motion
 #define DEFAULT_MOONRAKER_IP   "192.168.1.100"
@@ -109,9 +118,14 @@
 #define SERIAL_BAUD                115200
 #define DEBUG_LOG_ENABLED          0      // 1 enables DBG_* macros in debug_log.h
 
-// ─── Velocity Median Filter ──────────────────────────────────────────────────
-// Odd integer ≥ 3. Larger = better spike rejection, slightly more latency.
-#define VEL_MEDIAN_N  5
+// ─── Velocity Sliding-Window Filter ──────────────────────────────────────────
+// Ticks and elapsed time are accumulated over VEL_MEDIAN_N × ENCODER_UPDATE_MS
+// before the velocity is calculated.  In full-step mode, ticks arrive sparsely
+// (≈1 per detent), so a wider window is needed to produce a meaningful average.
+// 15 windows × 20 ms = 300 ms total; at 5 mm/s this captures ≈3–4 movement
+// ticks, giving a stable reading without significant display lag.
+// Odd integer ≥ 3.
+#define VEL_MEDIAN_N  15
 
 
 // ─── NVS Namespace & Keys ────────────────────────────────────────────────────
