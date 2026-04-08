@@ -79,15 +79,19 @@
 //   Re-run calibration after changing ENCODER_USE_FULL_STEP or ENCODER_FULL_STEP_THRESHOLD.
 //
 #define ENCODER_WHEEL_DIAM_MM   10.0f   // Pinch wheel outer diameter in mm
-#define ENCODER_TICKS_PER_REV   20      // Movement ticks per revolution in full-step mode
-                                        // (≈ 1 tick per detent for a 20-detent KY-040).
-                                        // Run auto-calibration to tune this for your setup.
+// ENCODER_TICKS_PER_REV is defined relative to the active decode mode so that
+// DEFAULT_CAL_FACTOR always gives a reasonable mm/tick estimate before calibration.
+#if ENCODER_USE_FULL_STEP
+#define ENCODER_TICKS_PER_REV   20      // ≈ 1 movement tick per detent (20-detent KY-040)
+#else
+#define ENCODER_TICKS_PER_REV   80      // ≈ 4 × 20 raw gray-code edges per revolution (x4 mode)
+#endif
 #define DEFAULT_CAL_FACTOR  (M_PI * ENCODER_WHEEL_DIAM_MM / ENCODER_TICKS_PER_REV)
 // With defaults above: (π × 10) / 20 ≈ 1.5708 mm/tick
 #define DEFAULT_TIMEOUT_MS     8000UL       // ms of no filament motion → fault
                                             // At 5 mm/s with a 5 cm sensor-to-extruder offset:
                                             // transit time ≈ 10 s, so an 8 s timeout fires with ~2 s to spare.
-#define DEFAULT_MIN_EXT_VEL    0.5f         // mm/s extruder velocity → "printing"
+#define DEFAULT_MIN_EXT_VEL    0.3f         // mm/s extruder velocity → "printing"
 #define DEFAULT_MOTION_THRESH  1            // minimum |ticks| to count as motion
 #define DEFAULT_MOONRAKER_IP   "192.168.1.100"
 #define DEFAULT_MOONRAKER_PORT 7125
@@ -120,12 +124,20 @@
 
 // ─── Velocity Sliding-Window Filter ──────────────────────────────────────────
 // Ticks and elapsed time are accumulated over VEL_MEDIAN_N × ENCODER_UPDATE_MS
-// before the velocity is calculated.  In full-step mode, ticks arrive sparsely
-// (≈1 per detent), so a wider window is needed to produce a meaningful average.
-// 15 windows × 20 ms = 300 ms total; at 5 mm/s this captures ≈3–4 movement
-// ticks, giving a stable reading without significant display lag.
+// before velocity is computed.  In full-step mode, movement ticks arrive only
+// once per mechanical detent (≈1.57 mm/tick at default settings), so the window
+// must be wide enough to contain at least two ticks even at the minimum printing
+// speed (DEFAULT_MIN_EXT_VEL).
+//
+// Required window:
+//   2 × cal_factor × 1000 / (DEFAULT_MIN_EXT_VEL × ENCODER_UPDATE_MS)
+//   = 2 × (π × 10 / 20) × 1000 / (0.3 × 20) ≈ 524 → 525 (odd)
+//
+// This purely affects the smoothed velocity shown on the web UI and OLED display.
+// Fault detection is driven by g_last_motion_ms, which is updated on every valid
+// gray-code edge in the ISR and is unaffected by this filter.
 // Odd integer ≥ 3.
-#define VEL_MEDIAN_N  15
+#define VEL_MEDIAN_N  525
 
 
 // ─── NVS Namespace & Keys ────────────────────────────────────────────────────
