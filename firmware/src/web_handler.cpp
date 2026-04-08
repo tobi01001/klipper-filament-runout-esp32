@@ -10,6 +10,7 @@
 #include <WebServer.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
+#include <LittleFS.h>
 
 // ─── Module state ─────────────────────────────────────────────────────────────
 static WebServer          s_server(WEB_SERVER_PORT);
@@ -18,460 +19,87 @@ static SemaphoreHandle_t  s_config_mutex = nullptr;
 static SensorStatus      *s_status       = nullptr;
 static SensorConfig      *s_config       = nullptr;
 
-// ─── Embedded Single-Page Application ────────────────────────────────────────
-static const char INDEX_HTML[] PROGMEM = R"rawhtml(
+// ─── Fallback page (served when LittleFS index.html is absent) ───────────────
+// This is intentionally minimal. The full web UI lives in data/index.html and
+// must be uploaded to the device filesystem with:  pio run --target uploadfs
+static const char FALLBACK_HTML[] PROGMEM = R"rawhtml(
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Filament Runout Sensor</title>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>Filament Runout Sensor – Setup Required</title>
   <style>
-    *{box-sizing:border-box;margin:0;padding:0}
     body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-         background:#111;color:#eee;padding:16px}
-    h1{font-size:1.4rem;margin-bottom:16px;color:#f90}
-    h2{font-size:1rem;margin-bottom:10px;color:#aaa}
-    .card{background:#1e1e1e;border-radius:8px;padding:16px;margin-bottom:14px;
-          border:1px solid #333}
-    .badge{display:inline-block;padding:4px 12px;border-radius:20px;
-           font-size:.85rem;font-weight:600;margin-bottom:12px}
-    .badge-ready   {background:#0a5;color:#fff}
-    .badge-printing{background:#06f;color:#fff}
-    .badge-fault   {background:#c00;color:#fff;animation:pulse 1s infinite}
-    .badge-idle    {background:#555;color:#fff}
-    .badge-wifi    {background:#a60;color:#fff}
-    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
-    table{width:100%;border-collapse:collapse;font-size:.9rem}
-    td{padding:5px 4px;border-bottom:1px solid #2a2a2a}
-    td:first-child{color:#aaa;width:55%}
-    td:last-child{text-align:right;font-family:monospace}
-    label{display:block;font-size:.85rem;color:#aaa;margin:8px 0 2px}
-    input[type=text],input[type=number]{width:100%;padding:6px 8px;
-      background:#2a2a2a;border:1px solid #444;border-radius:4px;
-      color:#eee;font-size:.9rem}
-    .row{display:flex;gap:10px;flex-wrap:wrap}
-    .row>*{flex:1 1 220px;min-width:0}
-    button{width:100%;margin-top:10px;padding:8px;border:none;border-radius:5px;
-           font-size:.9rem;cursor:pointer;font-weight:600}
-    .btn-save  {background:#0a5;color:#fff}
-    .btn-reset {background:#c00;color:#fff}
-    .btn-save:hover{background:#0c6}
-    .btn-reset:hover{background:#e00}
-    #msg{font-size:.8rem;text-align:center;margin-top:6px;min-height:1.2em;color:#0f0}
-    .vel-bar{height:8px;background:#2a2a2a;border-radius:4px;margin-top:4px;
-             overflow:hidden}
-    .vel-bar-inner{height:100%;background:#06f;border-radius:4px;
-                   transition:width .3s}
-    .toggle-row{display:flex;align-items:flex-start;gap:10px;margin:8px 0 2px;flex-wrap:wrap}
-    .toggle-row label{margin:0;flex:1 1 220px}
-    input[type=checkbox]{width:18px;height:18px;accent-color:#06f;cursor:pointer}
-    @media (max-width: 560px){
-      body{padding:10px}
-      .card{padding:12px}
-      .row{gap:8px}
-      .row>*{flex-basis:100%}
-      td:first-child{width:58%}
-    }
+         background:#111;color:#eee;padding:20px;max-width:700px;margin:0 auto;line-height:1.6}
+    h1{color:#f90;font-size:1.3rem;margin-bottom:12px}
+    h2{color:#aaa;font-size:1rem;margin:18px 0 6px}
+    .warn{background:#332200;border:1px solid #a60;border-radius:6px;padding:12px;margin-bottom:16px}
+    .info{background:#1a2a1a;border:1px solid #0a5;border-radius:6px;padding:12px;margin-bottom:16px}
+    code{background:#2a2a2a;padding:2px 6px;border-radius:3px;font-size:.9em}
+    pre{background:#0a0a0a;padding:12px;border-radius:5px;overflow-x:auto;font-size:.85rem}
+    ol{padding-left:1.4em}
+    li{margin:4px 0}
+    a{color:#06f}
   </style>
 </head>
 <body>
-  <h1>Filament Runout Sensor</h1>
-
-  <!-- Status Card -->
-  <div class="card">
-    <h2>Live Status</h2>
-    <div id="badge" class="badge badge-idle">…</div>
-    <table>
-      <tr><td>Encoder velocity</td><td id="enc-vel">-</td></tr>
-      <tr><td>Extruder velocity</td><td id="ext-vel">-</td></tr>
-      <tr><td>Moonraker link</td><td id="mr-link">-</td></tr>
-      <tr><td>Klippy state</td><td id="klippy">-</td></tr>
-      <tr><td>Tick count</td><td id="ticks">-</td></tr>
-      <tr><td>Direction</td><td id="dir">-</td></tr>
-      <tr><td>Last motion</td><td id="motion-ago">-</td></tr>
-      <tr><td>Fault active</td><td id="fault">-</td></tr>
-      <tr><td>IP address</td><td id="ip">-</td></tr>
-    </table>
-    <div class="vel-bar"><div class="vel-bar-inner" id="vel-bar" style="width:0%"></div></div>
-    <button class="btn-reset" onclick="resetFault()">Reset Fault</button>
+  <h1>&#9888; Web Interface Files Not Found</h1>
+  <div class="warn">
+    The web interface files have not been uploaded to the device filesystem (LittleFS).
+    The device firmware is running normally &mdash; only the web UI is missing.
   </div>
-
-  <!-- Configuration Card -->
-  <div class="card">
-    <h2>Configuration</h2>
-    <div class="row">
-      <div>
-        <label>Calibration factor (mm/tick)</label>
-        <input type="number" id="cal" step="0.001" min="0.001" max="10"/>
-      </div>
-      <div>
-        <label>Fault timeout (ms)</label>
-        <input type="number" id="timeout" step="100" min="500" max="10000"/>
-      </div>
-    </div>
-    <div class="row">
-      <div>
-        <label>Min extruder velocity (mm/s)</label>
-        <input type="number" id="min-vel" step="0.1" min="0.1" max="20"/>
-      </div>
-      <div>
-        <label>Motion threshold (ticks)</label>
-        <input type="number" id="thresh" step="1" min="1" max="100"/>
-      </div>
-    </div>
-    <div class="row">
-      <div>
-        <label>Moonraker IP / hostname</label>
-        <input type="text" id="mr-ip" maxlength="39"/>
-      </div>
-      <div>
-        <label>Moonraker port</label>
-        <input type="number" id="mr-port" step="1" min="1" max="65535"/>
-      </div>
-    </div>
-    <label>WiFi SSID</label>
-    <input type="text" id="wifi-ssid" maxlength="63"/>
-    <label>WiFi Password</label>
-    <input type="text" id="wifi-pass" maxlength="63" placeholder="leave blank to keep current"/>
-    <div class="row">
-      <div>
-        <label>OTA hostname (.local)</label>
-        <input type="text" id="ota-host" maxlength="31" placeholder="filament-sensor"/>
-      </div>
-      <div>
-        <label>OTA push password</label>
-        <input type="password" id="ota-pass" maxlength="31" placeholder="leave blank to keep current"/>
-      </div>
-    </div>
-    <p style="font-size:.75rem;color:#a60;margin:4px 0 6px">&#9432; OTA hostname and password changes require a device restart to take effect.</p>
-    <label>Fault GCODE <span style="color:#666;font-size:.75rem">(sent to Moonraker via WebSocket on runout)</span></label>
-    <input type="text" id="fault-gcode" maxlength="63" placeholder="PAUSE"/>
-    <div class="toggle-row">
-      <input type="checkbox" id="sensor-en"/>
-      <label for="sensor-en">Enable fault trigger sensor (runout output)</label>
-    </div>
-    <div class="toggle-row">
-      <input type="checkbox" id="disp-en"/>
-      <label for="disp-en">Enable OLED display (SSD1306 128&#x00D7;64)</label>
-    </div>
-    <button class="btn-save" onclick="saveConfig()">Save &amp; Apply</button>
-    <button class="btn-reset" onclick="rebootDevice()" style="margin-top:6px">Restart Device</button>
-    <div id="msg"></div>
+  <h2>Upload via PlatformIO (recommended)</h2>
+  <div class="info">
+    <ol>
+      <li>Clone or download the repository:<br>
+        <a href="https://github.com/tobi01001/klipper-filament-runout-esp32">
+          https://github.com/tobi01001/klipper-filament-runout-esp32</a></li>
+      <li>Connect the device via USB</li>
+      <li>Run: <code>pio run --target uploadfs</code><br>
+        Or in VS&nbsp;Code: click <strong>Upload Filesystem Image</strong> in the PlatformIO toolbar</li>
+      <li>Reset the device and reload this page</li>
+    </ol>
   </div>
-
-  <!-- Calibration Card -->
-  <div class="card">
-    <h2>Auto-Calibrate</h2>
-    <p style="font-size:.8rem;color:#aaa;margin-bottom:8px">
-      Extrudes filament and measures encoder ticks to compute the calibration factor.<br>
-      <strong style="color:#fa0">&#9888; Nozzle must be at print temperature. No active print.</strong>
-    </p>
-    <p id="cal-nozzle" style="font-size:.82rem;color:#9ad;margin-bottom:8px">Nozzle: --.- &#176;C / target --.- &#176;C</p>
-    <div class="row">
-      <div>
-        <label>Extrude distance (mm)</label>
-        <input type="number" id="cal-mm" step="1" min="10" max="200" value="50"/>
-      </div>
-      <div>
-        <label>Speed (mm/min)</label>
-        <input type="number" id="cal-speed" step="10" min="60" max="600" value="300"/>
-      </div>
-    </div>
-    <button class="btn-save" id="btn-cal" onclick="startCal()">Start Calibration</button>
-    <div id="cal-status" style="font-size:.85rem;margin-top:8px;min-height:1.4em;color:#aaa"></div>
+  <h2>Upload via Arduino IDE</h2>
+  <div class="info">
+    <ol>
+      <li>Install the <a href="https://github.com/lorol/arduino-esp32littlefs-plugin">
+        ESP32 LittleFS Filesystem Uploader plugin</a></li>
+      <li>Download the <code>data/</code> folder from the repository and place its contents
+        in your sketch&rsquo;s <code>data/</code> subfolder</li>
+      <li>Use <strong>Tools &rarr; ESP32 LittleFS Data Upload</strong></li>
+    </ol>
   </div>
-
-  <!-- OTA Update Card -->
-  <div class="card">
-    <h2>Firmware Update</h2>
-    <table>
-      <tr><td>Installed version</td><td id="ota-ver">-</td></tr>
-      <tr><td>Latest release</td>   <td id="ota-latest">-</td></tr>
-      <tr><td>Status</td>           <td id="ota-status">-</td></tr>
-    </table>
-    <button class="btn-save" id="btn-check" onclick="checkForUpdates()" style="margin-top:10px">
-      Check for Updates
-    </button>
-    <button class="btn-reset" id="btn-apply" onclick="applyUpdate()" style="margin-top:6px;display:none">
-      Apply Update
-    </button>
-  </div>
-
-  <!-- Diagnostics Card -->
-  <div class="card">
-    <h2>Diagnostics</h2>
-    <table>
-      <tr><td>Uptime</td><td id="diag-uptime">-</td></tr>
-      <tr><td>Heap free / min</td><td id="diag-heap">-</td></tr>
-      <tr><td>WiFi disconnect reason</td><td id="diag-disc">-</td></tr>
-      <tr><td>MR ws init/conn/sub</td><td id="diag-mr-state">-</td></tr>
-      <tr><td>MR stale / age</td><td id="diag-mr-age">-</td></tr>
-      <tr><td>MR target</td><td id="diag-mr-target">-</td></tr>
-      <tr><td>MR last connect</td><td id="diag-mr-last">-</td></tr>
-      <tr><td>MR raw WS probe</td><td id="diag-mr-probe">-</td></tr>
-      <tr><td>MR probe status line</td><td id="diag-mr-probe-line">-</td></tr>
-      <tr><td>MR conn/disc/start</td><td id="diag-mr-evt">-</td></tr>
-      <tr><td>MR info/sub/query</td><td id="diag-mr-req">-</td></tr>
-      <tr><td>MR JSON errors</td><td id="diag-mr-json">-</td></tr>
-    </table>
-    <p style="font-size:.75rem;color:#666;margin:10px 0 3px">Event log</p>
-    <pre id="diag-mr-log" style="font-size:.7rem;background:#0a0a0a;padding:8px;border-radius:4px;white-space:pre-wrap;word-break:break-all;max-height:150px;overflow-y:auto;color:#7c7;margin:0">(no events)</pre>
-  </div>
-
-  <script>
-    let maxVel = 10;
-
-    function badge(state) {
-      const b = document.getElementById('badge');
-      b.textContent = state;
-      if      (state === 'PRINTING')          b.className = 'badge badge-printing';
-      else if (state === 'FAULT')             b.className = 'badge badge-fault';
-      else if (state === 'IDLE')              b.className = 'badge badge-idle';
-      else if (state === 'READY')             b.className = 'badge badge-ready';
-      else if (state.startsWith('WIFI'))      b.className = 'badge badge-wifi';
-      else                                    b.className = 'badge badge-idle';
-    }
-
-    function refresh() {
-      fetch('/api/status')
-        .then(r=>r.json())
-        .then(d=>{
-          badge(d.state);
-          document.getElementById('enc-vel').textContent   = d.enc_vel.toFixed(2)+' mm/s';
-          document.getElementById('ext-vel').textContent   = d.ext_vel.toFixed(2)+' mm/s';
-          let mrText = 'DISCONNECTED';
-          if (d.mr_connected && d.mr_subscribed && !d.mr_stale) mrText = 'LIVE';
-          else if (d.mr_connected && d.mr_subscribed && d.mr_stale) mrText = 'STALE';
-          else if (d.mr_connected) mrText = 'CONNECTING';
-          document.getElementById('mr-link').textContent    = mrText;
-          document.getElementById('mr-link').style.color    = (mrText === 'LIVE') ? '#4f4' : ((mrText === 'STALE') ? '#fa0' : '#f66');
-          document.getElementById('klippy').textContent     = d.klippy_state;
-          document.getElementById('ticks').textContent     = d.ticks;
-          const dirs = {'-1':'◀ Reverse','0':'● Stopped','1':'▶ Forward'};
-          document.getElementById('dir').textContent       = dirs[String(d.direction)] ?? d.direction;
-          document.getElementById('motion-ago').textContent= d.motion_ago_ms + ' ms ago';
-          document.getElementById('fault').textContent     = d.fault ? '⚠ YES' : 'No';
-          document.getElementById('fault').style.color     = d.fault ? '#f44' : '#4f4';
-          document.getElementById('ip').textContent        = d.ip;
-          const noz = d.nozzle_temp ?? 0;
-          const nozTarget = d.nozzle_target ?? 0;
-          const calNozzle = document.getElementById('cal-nozzle');
-          calNozzle.textContent = 'Nozzle: ' + noz.toFixed(1) + ' °C / target ' + nozTarget.toFixed(1) + ' °C';
-          calNozzle.style.color = (nozTarget > 0 && noz >= nozTarget - 5.0) ? '#4f4' : '#9ad';
-          const pct = Math.min(100, Math.abs(d.enc_vel) / maxVel * 100);
-          document.getElementById('vel-bar').style.width   = pct + '%';
-        }).catch(()=>{});
-    }
-
-    function loadConfig() {
-      fetch('/api/config')
-        .then(r=>r.json())
-        .then(d=>{
-          document.getElementById('cal').value        = d.cal_factor;
-          document.getElementById('timeout').value    = d.timeout_ms;
-          document.getElementById('min-vel').value    = d.min_ext_vel;
-          document.getElementById('thresh').value     = d.motion_threshold;
-          document.getElementById('mr-ip').value      = d.moonraker_ip;
-          document.getElementById('mr-port').value    = d.moonraker_port;
-          document.getElementById('wifi-ssid').value  = d.wifi_ssid;
-          document.getElementById('ota-host').value   = d.ota_hostname;
-          document.getElementById('sensor-en').checked = (d.sensor_enabled !== false);
-          document.getElementById('disp-en').checked  = d.display_enabled;
-          document.getElementById('fault-gcode').value = d.fault_gcode || 'PAUSE';
-          maxVel = Math.max(10, d.min_ext_vel * 20);
-        }).catch(()=>{});
-    }
-
-    function saveConfig() {
-      const body = {
-        cal_factor:       parseFloat(document.getElementById('cal').value),
-        timeout_ms:       parseInt(document.getElementById('timeout').value),
-        min_ext_vel:      parseFloat(document.getElementById('min-vel').value),
-        motion_threshold: parseInt(document.getElementById('thresh').value),
-        moonraker_ip:     document.getElementById('mr-ip').value,
-        moonraker_port:   parseInt(document.getElementById('mr-port').value),
-        wifi_ssid:        document.getElementById('wifi-ssid').value,
-        wifi_pass:        document.getElementById('wifi-pass').value,
-        ota_hostname:     document.getElementById('ota-host').value,
-        ota_password:     document.getElementById('ota-pass').value,
-        sensor_enabled:   document.getElementById('sensor-en').checked,
-        display_enabled:  document.getElementById('disp-en').checked,
-        fault_gcode:      document.getElementById('fault-gcode').value,
-      };
-      fetch('/api/config', {method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify(body)})
-        .then(r=>r.json())
-        .then(d=>{ showMsg(d.ok ? '✓ Saved' : '✗ '+d.error, d.ok); })
-        .catch(()=>showMsg('✗ Request failed', false));
-    }
-
-    function resetFault() {
-      fetch('/api/reset', {method:'POST'})
-        .then(r=>r.json())
-        .then(d=>showMsg(d.ok ? '✓ Fault cleared' : '✗ '+d.error, d.ok))
-        .catch(()=>showMsg('✗ Request failed', false));
-    }
-
-    function rebootDevice() {
-      if (!confirm('Restart the device now?\nThe page will reload automatically after ~5 seconds.')) return;
-      fetch('/api/reboot', {method:'POST'})
-        .then(r=>r.json())
-        .then(()=>{ showMsg('⟳ Restarting…', true); setTimeout(()=>location.reload(), 5000); })
-        .catch(()=>showMsg('✗ Request failed', false));
-    }
-
-    function loadOta() {
-      fetch('/api/ota')
-        .then(r=>r.json())
-        .then(d=>{
-          document.getElementById('ota-ver').textContent    = d.version;
-          document.getElementById('ota-latest').textContent = d.latest_tag || '—';
-          document.getElementById('ota-status').textContent = d.status;
-          if (!d.github_ota) {
-            document.getElementById('btn-check').style.display = 'none';
-            document.getElementById('btn-apply').style.display = 'none';
-            return;
-          }
-          // Show "Apply Update" button only when a newer version is confirmed available.
-          document.getElementById('btn-apply').style.display =
-            d.status === 'update-available' ? 'block' : 'none';
-        }).catch(()=>{});
-    }
-
-    function checkForUpdates() {
-      document.getElementById('ota-status').textContent = 'checking…';
-      document.getElementById('btn-apply').style.display = 'none';
-      fetch('/api/ota/check', {method:'POST'})
-        .then(r=>r.json())
-        .then(d=>{
-          if (!d.ok) document.getElementById('ota-status').textContent = '✗ '+d.error;
-        })
-        .catch(()=>{ document.getElementById('ota-status').textContent = '✗ Request failed'; });
-    }
-
-    function applyUpdate() {
-      const tag = document.getElementById('ota-latest').textContent;
-      if (!confirm(`Apply firmware update ${tag}?\nThe device will reboot after flashing.`)) return;
-      document.getElementById('ota-status').textContent = 'starting update…';
-      document.getElementById('btn-apply').style.display = 'none';
-      fetch('/api/ota/update', {method:'POST'})
-        .then(r=>r.json())
-        .then(d=>{
-          if (!d.ok) document.getElementById('ota-status').textContent = '✗ '+d.error;
-          else document.getElementById('ota-status').textContent = 'downloading…';
-        })
-        .catch(()=>{ document.getElementById('ota-status').textContent = '✗ Request failed'; });
-    }
-
-    function showMsg(text, ok) {
-      const m = document.getElementById('msg');
-      m.textContent  = text;
-      m.style.color  = ok ? '#0f0' : '#f44';
-      setTimeout(()=>{ m.textContent=''; }, 4000);
-    }
-
-    // ─── Calibration ───────────────────────────────────────────────────────────────
-    let calPollTimer = null;
-
-    function startCal() {
-      const mm    = parseFloat(document.getElementById('cal-mm').value);
-      const speed = parseFloat(document.getElementById('cal-speed').value);
-      const btn   = document.getElementById('btn-cal');
-      const stat  = document.getElementById('cal-status');
-      stat.textContent = 'Starting…';
-      stat.style.color = '#aaa';
-      btn.disabled = true;
-      fetch('/api/calibrate', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({extrude_mm: mm, speed_mmpm: speed})
-      })
-        .then(r=>r.json())
-        .then(d=>{
-          if (!d.ok) {
-            stat.textContent = '\u2717 ' + d.error;
-            stat.style.color = '#f44';
-            btn.disabled = false;
-          } else {
-            pollCal();
-          }
-        })
-        .catch(()=>{ stat.textContent = '\u2717 Request failed'; stat.style.color='#f44'; btn.disabled=false; });
-    }
-
-    function pollCal() {
-      fetch('/api/calibrate')
-        .then(r=>r.json())
-        .then(d=>{
-          const st    = d.state;
-          const stat  = document.getElementById('cal-status');
-          const btn   = document.getElementById('btn-cal');
-          if (st === 'done') {
-            btn.disabled = false;
-            stat.style.color = '#4f4';
-            stat.innerHTML = '\u2713 Done: <strong>' + d.cal_factor.toFixed(4) + ' mm/tick</strong>'
-              + ' (' + d.ticks + ' ticks for ' + d.mm.toFixed(1) + ' mm)'
-              + ' &mdash; <a href="#" style="color:#06f" onclick="applyCal(' + d.cal_factor + ');return false">Apply &amp; Save</a>';
-          } else if (st === 'failed') {
-            btn.disabled = false;
-            stat.style.color = '#f44';
-            stat.textContent = '\u2717 Failed: ' + (d.error || 'unknown error');
-          } else if (st === 'idle') {
-            btn.disabled = false;
-            stat.textContent = '';
-          } else {
-            const labels = {sent:'Waiting for motion\u2026', moving:'Measuring ticks\u2026', settling:'Settling\u2026'};
-            stat.style.color = '#aaa';
-            stat.textContent = labels[st] || st;
-            calPollTimer = setTimeout(pollCal, 400);
-          }
-        })
-        .catch(()=>{ calPollTimer = setTimeout(pollCal, 1000); });
-    }
-
-    function applyCal(factor) {
-      document.getElementById('cal').value = factor.toFixed(4);
-      saveConfig();
-      document.getElementById('cal-status').textContent = '\u2713 Applied and saved';
-      document.getElementById('cal-status').style.color = '#4f4';
-    }
-
-    function refreshDiag() {
-      fetch('/api/diag')
-        .then(r=>r.json())
-        .then(d=>{
-          document.getElementById('diag-uptime').textContent   = d.uptime_s + ' s';
-          document.getElementById('diag-heap').textContent     = d.heap_free + ' / ' + d.heap_min + ' B';
-          document.getElementById('diag-disc').textContent     = d.wifi_disc_reason;
-          document.getElementById('diag-mr-state').textContent = (d.mr_ws_init?1:0) + '/' + (d.mr_ws_conn?1:0) + '/' + (d.mr_sub?1:0) + ' (' + d.klippy_state + ')';
-          document.getElementById('diag-mr-age').textContent   = (d.mr_stale ? 'stale' : 'live') + ' / ' + d.mr_age_ms + ' ms';
-          document.getElementById('diag-mr-target').textContent = (d.mr_last_host || '-') + ':' + d.mr_last_port;
-          document.getElementById('diag-mr-last').textContent   = (d.mr_last_ok ? 'ok' : 'failed') + ' / fails=' + d.mr_fail_streak + ' / backoff=' + d.mr_backoff_ms + ' ms';
-          document.getElementById('diag-mr-probe').textContent  = (d.mr_probe_last_ok ? '101-ok' : 'not-101') + ' / ' + d.mr_probe_101 + '/' + d.mr_probe_attempts;
-          document.getElementById('diag-mr-probe-line').textContent = d.mr_probe_status_line || '-';
-          document.getElementById('diag-mr-evt').textContent   = d.mr_conn_evt + '/' + d.mr_disc_evt + '/' + d.mr_start_evt;
-          document.getElementById('diag-mr-req').textContent   = d.mr_info_req + '/' + d.mr_sub_req + '/' + d.mr_query_req;
-          document.getElementById('diag-mr-json').textContent  = d.mr_json_err;
-          if (d.mr_log !== undefined) document.getElementById('diag-mr-log').textContent = d.mr_log;
-        }).catch(()=>{});
-    }
-
-    loadConfig();
-    loadOta();
-    refresh();
-    refreshDiag();
-    setInterval(refresh, 1000);
-    setInterval(refreshDiag, 2000);
-    setInterval(loadOta, 5000);
-  </script>
+  <h2>Download files directly</h2>
+  <p><a href="https://raw.githubusercontent.com/tobi01001/klipper-filament-runout-esp32/main/data/index.html">
+    data/index.html (raw)</a></p>
 </body>
 </html>
 )rawhtml";
 
+// ─── LittleFS helpers ─────────────────────────────────────────────────────────
+static String get_content_type(const String &path) {
+    if (path.endsWith(".html")) return "text/html";
+    if (path.endsWith(".css"))  return "text/css";
+    if (path.endsWith(".js"))   return "application/javascript";
+    if (path.endsWith(".json")) return "application/json";
+    if (path.endsWith(".ico"))  return "image/x-icon";
+    if (path.endsWith(".png"))  return "image/png";
+    if (path.endsWith(".svg"))  return "image/svg+xml";
+    if (path.endsWith(".gz"))   return "application/x-gzip";
+    return "text/plain";
+}
+
 // ─── REST Handlers ────────────────────────────────────────────────────────────
 static void handle_root() {
-    s_server.send_P(200, "text/html", INDEX_HTML);
+    File f = LittleFS.open("/index.html", "r");
+    if (f) {
+        s_server.streamFile(f, "text/html");
+        f.close();
+    } else {
+        s_server.send_P(200, "text/html", FALLBACK_HTML);
+    }
 }
 
 static void handle_status() {
@@ -846,6 +474,16 @@ static void handle_not_found() {
     return;
   }
 
+  // Try to serve the requested path from LittleFS (CSS, JS, images, etc.)
+  if (LittleFS.exists(uri)) {
+    File f = LittleFS.open(uri, "r");
+    if (f) {
+      s_server.streamFile(f, get_content_type(uri));
+      f.close();
+      return;
+    }
+  }
+
   s_server.sendHeader("Location", "/", true);
   s_server.send(302, "text/plain", "");
 }
@@ -859,6 +497,14 @@ void web_init(SemaphoreHandle_t status_mutex,
     s_config_mutex = config_mutex;
     s_status       = status;
     s_config       = config;
+
+    // Mount LittleFS – don't format on failure so we don't destroy user data.
+    // If mount fails the fallback PROGMEM page will be served instead.
+    if (!LittleFS.begin(false)) {
+        Serial.println("[WEB] LittleFS mount failed – web UI will use fallback page");
+    } else {
+        Serial.println("[WEB] LittleFS mounted");
+    }
 
     s_server.on("/",               HTTP_GET,  handle_root);
     s_server.on("/api/status",     HTTP_GET,  handle_status);
