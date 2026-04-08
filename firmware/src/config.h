@@ -176,7 +176,7 @@
 #define GITHUB_OWNER     "tobi01001"
 #define GITHUB_REPO      "klipper-filament-runout-esp32"
 #define GITHUB_API_URL   "https://api.github.com/repos/" GITHUB_OWNER "/" GITHUB_REPO "/releases/latest"
-#define ENABLE_GITHUB_OTA 0              // 0 removes HTTPS GitHub OTA path and mbedTLS dependency
+#define ENABLE_GITHUB_OTA 1              // 0 removes HTTPS GitHub OTA path and mbedTLS dependency
 
 // Maximum time to wait for the GitHub API or asset download (ms).
 #define OTA_HTTP_TIMEOUT_MS  20000
