@@ -27,8 +27,16 @@
 #include <freertos/task.h>
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
-#include <esp_wifi.h>   // esp32 low level interface functions for WiFi
-#include <esp_bt.h>     // esp32 low level interface functions for WiFi
+#include <esp_wifi.h>   // esp32 low level WiFi control
+// Bluetooth is never started in this application.  When DISABLE_BT is defined
+// (set in platformio.ini) the BT header and all BT symbol references are
+// compiled out so the linker can garbage-collect the BT library objects,
+// saving ~100–200 KB of flash.  The btStop()/esp_bt_controller_disable() calls
+// below are no-ops at runtime (BT was never enabled) but would otherwise keep
+// every BT library object alive in the binary.
+#ifndef DISABLE_BT
+#include <esp_bt.h>
+#endif
 
 #include "config.h"
 #include "types.h"
@@ -73,13 +81,18 @@ void goto_sleep(uint16_t seconds)
   Serial.println("Turning off WiFi and Bluetooth before sleeping...");
   disconnect_WiFi(true);
 
-  // we also explicitely turn off BlueTooth
+  // we also explicitly turn off Bluetooth before sleep when it was used.
+  // With DISABLE_BT defined (default build), BT was never started so these
+  // calls are omitted entirely – both to avoid the ESP_ERR_INVALID_STATE
+  // return they would produce and to allow the linker to GC the BT libraries.
+#ifndef DISABLE_BT
   Serial.println("Turning off Bluetooth...");
   btStop();
 
   // and also low level ESP framework functions to turn off BT finally
   Serial.println("Disabling Bluetooth controller...");
   esp_bt_controller_disable();
+#endif
 
   // Guard against 32-bit integer overflow in the microsecond conversion.
   // The product 1000000 × seconds must fit inside a uint32_t
