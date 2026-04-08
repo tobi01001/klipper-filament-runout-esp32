@@ -17,6 +17,10 @@ on:
   push:
     branches:
       - main
+    paths:
+      - 'firmware/**'
+      - 'data/**'
+      - 'platformio.ini'
 
 jobs:
   build-and-release:
@@ -74,7 +78,7 @@ jobs:
           python-version: '3.x'
 
       - name: Install PlatformIO
-        run: pip install platformio
+        run: pip install platformio intelhex
 
       - name: Build firmware
         run: pio run -e esp32dev
