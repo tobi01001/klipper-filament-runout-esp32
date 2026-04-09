@@ -1,5 +1,6 @@
 #include "nvs_config.h"
 #include "config.h"
+#include "debug_log.h"
 
 #include <Arduino.h>
 #include <Preferences.h>
@@ -14,7 +15,7 @@ void nvs_load(SensorConfig &cfg) {
 
     if (!PREF_OPEN_RO()) {
         // No namespace yet – first boot, fill with defaults and save them
-        Serial.println("[NVS] First boot – using defaults");
+        DBG_PRINTLN("[NVS] First boot – using defaults");
         cfg.cal_factor       = DEFAULT_CAL_FACTOR;
         cfg.timeout_ms       = DEFAULT_TIMEOUT_MS;
         cfg.min_ext_vel      = DEFAULT_MIN_EXT_VEL;
@@ -79,13 +80,13 @@ void nvs_load(SensorConfig &cfg) {
 #endif
 
     prefs.end();
-    Serial.println("[NVS] Configuration loaded from NVS");
+    DBG_PRINTLN("[NVS] Configuration loaded from NVS");
 }
 
 void nvs_save(const SensorConfig &cfg) {
     Preferences prefs;
     if (!PREF_OPEN_RW()) {
-        Serial.println("[NVS] ERROR: Failed to open NVS for writing");
+        DBG_PRINTLN("[NVS] ERROR: Failed to open NVS for writing");
         return;
     }
 
@@ -104,5 +105,5 @@ void nvs_save(const SensorConfig &cfg) {
     prefs.putBool  (NVS_KEY_DISP_EN, cfg.display_enabled);
 
     prefs.end();
-    Serial.println("[NVS] Configuration saved to NVS");
+    DBG_PRINTLN("[NVS] Configuration saved to NVS");
 }

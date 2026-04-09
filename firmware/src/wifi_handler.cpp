@@ -82,7 +82,7 @@ static void start_captive_portal_ap() {
 
     WiFi.mode(WIFI_AP_STA);
     if (!WiFi.softAP(WIFI_AP_SSID, WIFI_AP_PASS)) {
-        Serial.println("[WiFi] Failed to start AP captive portal");
+        DBG_PRINTLN("[WiFi] Failed to start AP captive portal");
         return;
     }
 
@@ -103,7 +103,7 @@ static void stop_captive_portal_ap() {
     s_dns.stop();
     WiFi.softAPdisconnect(true);
     s_ap_active = false;
-    Serial.println("[WiFi] Captive portal AP stopped (mode change or station connected)");
+    DBG_PRINTLN("[WiFi] Captive portal AP stopped (mode change or station connected)");
 }
 
 void disconnect_WiFi(bool wifi_off = true)
@@ -114,13 +114,13 @@ void disconnect_WiFi(bool wifi_off = true)
   bool disconnected = false;
   while(!disconnected && disconnect_counter--)
   {
-    Serial.println("[WiFi] Disconnecting WiFi ...");
+    DBG_PRINTLN("[WiFi] Disconnecting WiFi ...");
     disconnected = WiFi.disconnect(false);
     delay(5);
   }
   if(wifi_off) 
   {
-    Serial.println("[WiFi] Turning off WiFi ...");
+    DBG_PRINTLN("[WiFi] Turning off WiFi ...");
     WiFi.disconnect(wifi_off);
     delay(5);
     WiFi.mode(WIFI_OFF);  //redundant but who cares....
@@ -168,7 +168,7 @@ static bool snapshot_config(SensorConfig *out_cfg) {
 
 static void start_sta_attempt(const SensorConfig &cfg) {
     if (cfg.wifi_ssid[0] == '\0') {
-        Serial.println("[WiFi] No SSID configured - station connect skipped");
+        DBG_PRINTLN("[WiFi] No SSID configured - station connect skipped");
         s_connecting      = false;
         s_next_attempt_ms = millis() + s_backoff_ms;
         update_status(false, "0.0.0.0");
@@ -176,7 +176,7 @@ static void start_sta_attempt(const SensorConfig &cfg) {
     }
 
     DBG_PRINTF("[WiFi] Connecting to '%s' ...\n", cfg.wifi_ssid);
-    Serial.println("[WiFi] Resetting WiFi state ...");
+    DBG_PRINTLN("[WiFi] Resetting WiFi state ...");
     s_tm.connect_attempts++;
 
     // Stop the captive portal AP before changing WiFi mode so that s_ap_active
@@ -279,14 +279,14 @@ void wifi_tick() {
     if (s_sta_phase != StaPhase::IDLE) {
         const uint32_t elapsed = (uint32_t)(now_ms - s_sta_phase_ms);
         if (s_sta_phase == StaPhase::WAIT_AFTER_DISC && elapsed >= 60U) {
-            Serial.println("[WiFi] Starting station mode in WIFI_OFF ...");
+            DBG_PRINTLN("[WiFi] Starting station mode in WIFI_OFF ...");
             WiFi.mode(WIFI_OFF);
             s_sta_phase    = StaPhase::WAIT_AFTER_OFF;
             s_sta_phase_ms = now_ms;
         } else if (s_sta_phase == StaPhase::WAIT_AFTER_OFF && elapsed >= 60U) {
-            Serial.println("[WiFi] Enabling station mode ...");
+            DBG_PRINTLN("[WiFi] Enabling station mode ...");
             if (!WiFi.mode(WIFI_STA)) {
-                Serial.println("[WiFi] Failed to switch to WIFI_STA, retrying later");
+                DBG_PRINTLN("[WiFi] Failed to switch to WIFI_STA, retrying later");
                 s_sta_phase       = StaPhase::IDLE;
                 s_connecting      = false;
                 s_next_attempt_ms = now_ms + s_backoff_ms;
