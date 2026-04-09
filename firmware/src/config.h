@@ -122,6 +122,15 @@
 #define SERIAL_BAUD                115200
 #define DEBUG_LOG_ENABLED          0      // 1 enables DBG_* macros in debug_log.h
 
+#if DEBUG_LOG_ENABLED
+#define CORE_DEBUG_LEVEL 3          // ESP-IDF log level (0-5, higher = more verbose)
+#define CONFIG_ARDUHAL_LOG_COLORS   1 ; coloured serial output
+#else
+#define CORE_DEBUG_LEVEL 0          // 0 = no logs, 1 = ERROR, 2 = WARN, 3 = INFO, 4 = DEBUG, 5 = VERBOSE
+#define CONFIG_ARDUHAL_LOG_COLORS   0  // coloured serial output
+#endif
+
+
 // ─── Velocity Sliding-Window Filter ──────────────────────────────────────────
 // Ticks and elapsed time are accumulated over VEL_MEDIAN_N × ENCODER_UPDATE_MS
 // before velocity is computed.  In full-step mode, movement ticks arrive only
