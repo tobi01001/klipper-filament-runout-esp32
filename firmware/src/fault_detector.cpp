@@ -38,7 +38,7 @@ static void set_state(SystemState next) {
 
 static void trigger_fault() {
     digitalWrite(PIN_RUNOUT, LOW);  // Active-LOW signal to Klipper
-    Serial.println("[FAULT] Filament runout detected! GPIO " +
+    DBG_PRINTLN("[FAULT] Filament runout detected! GPIO " +
                    String(PIN_RUNOUT) + " → LOW");
     set_state(SystemState::FAULT);
 
@@ -50,7 +50,7 @@ static void trigger_fault() {
     // Send fault GCODE via WebSocket if configured
     if (s_gcode_fn != nullptr && s_cfg != nullptr && s_cfg->fault_gcode[0] != '\0') {
         s_gcode_fn(s_cfg->fault_gcode);
-        Serial.println("[FD] Fault GCODE sent: " + String(s_cfg->fault_gcode));
+        DBG_PRINTLN("[FD] Fault GCODE sent: " + String(s_cfg->fault_gcode));
     }
 }
 
@@ -70,7 +70,7 @@ void fault_detector_init(SemaphoreHandle_t status_mutex,
     pinMode(PIN_RUNOUT, OUTPUT);
     digitalWrite(PIN_RUNOUT, HIGH);
 
-    Serial.println("[FD] Fault detector initialised (runout pin " +
+    DBG_PRINTLN("[FD] Fault detector initialised (runout pin " +
                    String(PIN_RUNOUT) + ")");
 }
 
@@ -127,7 +127,7 @@ void fault_detector_update(float ext_vel_mm_s) {
                 s_cal_state = CalState::FAILED;
                 strncpy(s_cal_error, "No motion detected", sizeof(s_cal_error) - 1);
                 s_cal_error[sizeof(s_cal_error) - 1] = '\0';
-                Serial.println("[CAL] FAILED: no motion within timeout");
+                DBG_PRINTLN("[CAL] FAILED: no motion within timeout");
             }
 
         } else if (s_cal_state == CalState::MOVING) {
@@ -159,7 +159,7 @@ void fault_detector_update(float ext_vel_mm_s) {
                 if (dticks > 0) {
                     s_cal_result = s_cal_mm / static_cast<float>(dticks);
                     s_cal_state  = CalState::DONE;
-                    Serial.printf("[CAL] Timeout-done: %.1f mm / %ld ticks = %.4f mm/tick\n",
+                    DBG_PRINTF("[CAL] Timeout-done: %.1f mm / %ld ticks = %.4f mm/tick\n",
                                   s_cal_mm, (long)dticks, s_cal_result);
                 } else {
                     s_cal_state = CalState::FAILED;
@@ -177,13 +177,13 @@ void fault_detector_update(float ext_vel_mm_s) {
                 if (dticks > 0) {
                     s_cal_result = s_cal_mm / static_cast<float>(dticks);
                     s_cal_state  = CalState::DONE;
-                    Serial.printf("[CAL] Done: %.1f mm / %ld ticks = %.4f mm/tick\n",
+                    DBG_PRINTF("[CAL] Done: %.1f mm / %ld ticks = %.4f mm/tick\n",
                                   s_cal_mm, (long)dticks, s_cal_result);
                 } else {
                     s_cal_state = CalState::FAILED;
                     strncpy(s_cal_error, "Zero ticks measured", sizeof(s_cal_error) - 1);
                     s_cal_error[sizeof(s_cal_error) - 1] = '\0';
-                    Serial.println("[CAL] FAILED: zero ticks");
+                    DBG_PRINTLN("[CAL] FAILED: zero ticks");
                 }
             }
         }
@@ -232,7 +232,7 @@ void fault_detector_update(float ext_vel_mm_s) {
 
 void fault_detector_reset() {
     digitalWrite(PIN_RUNOUT, HIGH);
-    Serial.println("[FD] Fault cleared, GPIO " + String(PIN_RUNOUT) + " → HIGH");
+    DBG_PRINTLN("[FD] Fault cleared, GPIO " + String(PIN_RUNOUT) + " → HIGH");
 
     if (xSemaphoreTake(s_status_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
         s_status->fault_active = false;
@@ -285,7 +285,7 @@ bool fault_detector_start_calibration(float extrude_mm, float speed_mmpm) {
     s_gcode_fn(script);
 
     s_cal_state = CalState::SENT;
-    Serial.printf("[CAL] Started: %.1f mm @ %.0f mm/min\n", extrude_mm, speed_mmpm);
+    DBG_PRINTF("[CAL] Started: %.1f mm @ %.0f mm/min\n", extrude_mm, speed_mmpm);
     return true;
 }
 

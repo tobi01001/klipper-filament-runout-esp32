@@ -39,6 +39,7 @@
 #endif
 
 #include "config.h"
+#include "debug_log.h"
 #include "types.h"
 #include "encoder.h"
 #include "fault_detector.h"
@@ -78,7 +79,7 @@ void goto_sleep(uint16_t seconds)
   // Strange but the ESP will fail to reconnect on the next wake if WiFi is not 
   // explicitely turned off.
   // further, this will save additional energy.
-  Serial.println("Turning off WiFi and Bluetooth before sleeping...");
+  DBG_PRINTLN("Turning off WiFi and Bluetooth before sleeping...");
   disconnect_WiFi(true);
 
   // we also explicitly turn off Bluetooth before sleep when it was used.
@@ -86,11 +87,11 @@ void goto_sleep(uint16_t seconds)
   // calls are omitted entirely – both to avoid the ESP_ERR_INVALID_STATE
   // return they would produce and to allow the linker to GC the BT libraries.
 #ifndef DISABLE_BT
-  Serial.println("Turning off Bluetooth...");
+  DBG_PRINTLN("Turning off Bluetooth...");
   btStop();
 
   // and also low level ESP framework functions to turn off BT finally
-  Serial.println("Disabling Bluetooth controller...");
+  DBG_PRINTLN("Disabling Bluetooth controller...");
   esp_bt_controller_disable();
 #endif
 
@@ -101,7 +102,7 @@ void goto_sleep(uint16_t seconds)
   // Values above that are clamped rather than using a 64-bit literal.
   static constexpr uint32_t MAX_SLEEP_SECONDS = 4294UL;
   if (seconds > MAX_SLEEP_SECONDS) {
-    Serial.printf("[WARN] goto_sleep: clamping %u s to %u s to avoid overflow\n",
+    DBG_PRINTF("[WARN] goto_sleep: clamping %u s to %u s to avoid overflow\n",
                   (unsigned)seconds, (unsigned)MAX_SLEEP_SECONDS);
     seconds = MAX_SLEEP_SECONDS;
   }
@@ -110,7 +111,7 @@ void goto_sleep(uint16_t seconds)
 
   // Go to sleep now.
 
-  Serial.println("Going to sleep for " + String(seconds) + " seconds.\n");
+  DBG_PRINTLN("Going to sleep for " + String(seconds) + " seconds.\n");
   
   esp_deep_sleep_start();
   // this line will never be reached!
@@ -119,7 +120,7 @@ void goto_sleep(uint16_t seconds)
 
 // ─── Core 0 Task – Protocol, Fault Detection, Web Server ─────────────────────
 static void core0_task(void * /*param*/) {
-    Serial.println("[C0] Core 0 task started");
+    DBG_PRINTLN("[C0] Core 0 task started");
     wifi_init(g_status_mutex, g_config_mutex, &g_status, &g_config);
     moonraker_init(g_status_mutex, g_config_mutex, &g_status, &g_config);
     ota_runtime_init(g_config_mutex, &g_config);
@@ -172,7 +173,7 @@ static void core0_task(void * /*param*/) {
 
 // ─── Core 1 Task – Encoder real-time processing ───────────────────────────────
 static void core1_task(void * /*param*/) {
-    Serial.println("[C1] Core 1 task started");
+    DBG_PRINTLN("[C1] Core 1 task started");
 
     SensorConfig *cfg_ptr = nullptr;
     if (xSemaphoreTake(g_config_mutex, portMAX_DELAY) == pdTRUE) {
@@ -189,9 +190,11 @@ static void core1_task(void * /*param*/) {
 
 // ─── Arduino Entry Points ─────────────────────────────────────────────────────
 void setup() {
+#if DEBUG_LOG_ENABLED
     Serial.begin(SERIAL_BAUD);
     delay(200); // Let serial settle
-    Serial.println("\n[MAIN] ESP32 Filament Runout Sensor booting…");
+#endif
+    DBG_PRINTLN("\n[MAIN] ESP32 Filament Runout Sensor booting…");
 
     // Create synchronisation primitives
     g_status_mutex  = xSemaphoreCreateMutex();
@@ -221,7 +224,7 @@ void setup() {
     // power cycle.  On wake, firstrun remains false (RTC memory survives deep
     // sleep), so normal task initialisation proceeds without any further delay.
     if(firstrun) {
-        Serial.println("[C0] First run detected - Going to sleep for a second");
+        DBG_PRINTLN("[C0] First run detected - Going to sleep for a second");
         firstrun = false;
         goto_sleep(1);
     }
@@ -248,7 +251,7 @@ void setup() {
         1   // Pin to Core 1
     );
 
-    Serial.println("[MAIN] Tasks launched – suspending Arduino loop task");
+    DBG_PRINTLN("[MAIN] Tasks launched – suspending Arduino loop task");
 }
 
 void loop() {

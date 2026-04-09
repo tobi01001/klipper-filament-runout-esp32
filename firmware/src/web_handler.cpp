@@ -5,6 +5,7 @@
 #include "moonraker.h"
 #include "wifi_handler.h"
 #include "config.h"
+#include "debug_log.h"
 
 #include <Arduino.h>
 #include <WebServer.h>
@@ -501,9 +502,9 @@ void web_init(SemaphoreHandle_t status_mutex,
     // Mount LittleFS – don't format on failure so we don't destroy user data.
     // If mount fails the fallback PROGMEM page will be served instead.
     if (!LittleFS.begin(false)) {
-        Serial.println("[WEB] LittleFS mount failed – web UI will use fallback page");
+        DBG_PRINTLN("[WEB] LittleFS mount failed – web UI will use fallback page");
     } else {
-        Serial.println("[WEB] LittleFS mounted");
+        DBG_PRINTLN("[WEB] LittleFS mounted");
     }
 
     s_server.on("/",               HTTP_GET,  handle_root);
@@ -523,7 +524,7 @@ void web_init(SemaphoreHandle_t status_mutex,
     s_server.onNotFound(handle_not_found);
 
     s_server.begin();
-    Serial.println("[WEB] HTTP server started on port " + String(WEB_SERVER_PORT));
+    DBG_PRINTLN("[WEB] HTTP server started on port " + String(WEB_SERVER_PORT));
 }
 
 void web_handle_client() {

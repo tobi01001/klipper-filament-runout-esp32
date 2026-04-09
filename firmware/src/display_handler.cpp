@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "config.h"
+#include "debug_log.h"
 #include "fault_detector.h"  // state_name()
 
 // ─── Module state ─────────────────────────────────────────────────────────────
@@ -118,13 +119,13 @@ void display_init(SemaphoreHandle_t status_mutex,
 
     s_display.setI2CAddress(OLED_I2C_ADDR << 1);  // U8g2 expects 8-bit address
     if (!s_display.begin()) {
-        Serial.println("[OLED] WARNING: display not found at address 0x"
+        DBG_PRINTLN("[OLED] WARNING: display not found at address 0x"
                        + String(OLED_I2C_ADDR, HEX));
         return;
     }
 
     s_initialized = true;
-    Serial.println("[OLED] SSD1306 initialised (" +
+    DBG_PRINTLN("[OLED] SSD1306 initialised (" +
                    String(OLED_WIDTH) + "x" + String(OLED_HEIGHT) +
                    ") at I2C 0x" + String(OLED_I2C_ADDR, HEX));
 

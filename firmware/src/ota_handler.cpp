@@ -139,7 +139,7 @@ static void github_update_task(void * /*param*/) {
 
     // ── Step 3: Version check ──────────────────────────────────────────────
     if (!version_is_newer(tag)) {
-        Serial.println("[OTA] Firmware is up-to-date");
+        DBG_PRINTLN("[OTA] Firmware is up-to-date");
         s_status = "up-to-date";
         s_task_running = false;
         vTaskDelete(nullptr);
@@ -170,7 +170,7 @@ static void github_update_task(void * /*param*/) {
     }
 
     if (asset_url[0] == '\0') {
-        Serial.println("[OTA] No firmware.bin asset found in release");
+        DBG_PRINTLN("[OTA] No firmware.bin asset found in release");
         s_status = "failed";
         s_task_running = false;
         vTaskDelete(nullptr);
@@ -248,7 +248,7 @@ void ota_init(const char *hostname, const char *password) {
         const String type = (ArduinoOTA.getCommand() == U_FLASH)
                                 ? "firmware"
                                 : "filesystem";
-        Serial.println("[OTA] ArduinoOTA start – type: " + type);
+        DBG_PRINTLN("[OTA] ArduinoOTA start – type: " + type);
         s_status = "updating";
 #ifdef ENABLE_OLED
         display_set_ota_active(true);
@@ -257,7 +257,7 @@ void ota_init(const char *hostname, const char *password) {
     });
 
     ArduinoOTA.onEnd([]() {
-        Serial.println("\n[OTA] ArduinoOTA complete – rebooting");
+        DBG_PRINTLN("\n[OTA] ArduinoOTA complete – rebooting");
         s_status = "ok";
 #ifdef ENABLE_OLED
         display_show_ota_reboot();
@@ -275,12 +275,12 @@ void ota_init(const char *hostname, const char *password) {
     ArduinoOTA.onError([](ota_error_t error) {
         DBG_PRINTF("[OTA] Error[%u]: ", error);
         switch (error) {
-            case OTA_AUTH_ERROR:    Serial.println("Auth failed");       break;
-            case OTA_BEGIN_ERROR:   Serial.println("Begin failed");      break;
-            case OTA_CONNECT_ERROR: Serial.println("Connect failed");    break;
-            case OTA_RECEIVE_ERROR: Serial.println("Receive failed");    break;
-            case OTA_END_ERROR:     Serial.println("End failed");        break;
-            default:                Serial.println("Unknown error");     break;
+            case OTA_AUTH_ERROR:    DBG_PRINTLN("Auth failed");       break;
+            case OTA_BEGIN_ERROR:   DBG_PRINTLN("Begin failed");      break;
+            case OTA_CONNECT_ERROR: DBG_PRINTLN("Connect failed");    break;
+            case OTA_RECEIVE_ERROR: DBG_PRINTLN("Receive failed");    break;
+            case OTA_END_ERROR:     DBG_PRINTLN("End failed");        break;
+            default:                DBG_PRINTLN("Unknown error");     break;
         }
         s_status = "failed";
 #ifdef ENABLE_OLED
@@ -299,7 +299,7 @@ void ota_handle() {
 void ota_github_check_request() {
 #if ENABLE_GITHUB_OTA
     if (s_task_running) {
-        Serial.println("[OTA] Task already running – check request ignored");
+        DBG_PRINTLN("[OTA] Task already running – check request ignored");
         return;
     }
     s_task_running = true;
@@ -316,7 +316,7 @@ void ota_github_check_request() {
     );
 
     if (ok != pdPASS) {
-        Serial.println("[OTA] Failed to create check task");
+        DBG_PRINTLN("[OTA] Failed to create check task");
         s_task_running = false;
         s_status = "failed";
     }
@@ -328,7 +328,7 @@ void ota_github_check_request() {
 void ota_github_update_request() {
 #if ENABLE_GITHUB_OTA
     if (s_task_running) {
-        Serial.println("[OTA] Update already in progress – request ignored");
+        DBG_PRINTLN("[OTA] Update already in progress – request ignored");
         return;
     }
     s_task_running = true;
@@ -350,7 +350,7 @@ void ota_github_update_request() {
     );
 
     if (ok != pdPASS) {
-        Serial.println("[OTA] Failed to create update task");
+        DBG_PRINTLN("[OTA] Failed to create update task");
         s_task_running = false;
         s_status = "failed";
     }
