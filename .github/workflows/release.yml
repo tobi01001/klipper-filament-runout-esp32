@@ -4,11 +4,14 @@
 # What it does:
 #   1. Reads the current FIRMWARE_VERSION from firmware/src/config.h
 #   2. Bumps the patch digit  (e.g. 1.0.3 → 1.0.4)
-#   3. Commits and pushes the version bump (tagged [skip ci] to break the loop)
-#   4. Builds the firmware with PlatformIO
-#   5. Creates a GitHub Release tagged v<new-version> with firmware.bin attached
+#   3. Bumps the matching ui-version tag and UI_VERSION const in data/index.html
+#   4. Commits and pushes the version bump (tagged [skip ci] to break the loop)
+#   5. Builds the firmware with PlatformIO
+#   6. Creates a GitHub Release tagged v<new-version> with firmware.bin and
+#      index.html attached
 #
-# The "firmware.bin" asset is what the on-device GitHub OTA pull uses.
+# Both "firmware.bin" and "index.html" are what the on-device GitHub OTA pull
+# uses: firmware.bin for the flash partition, index.html for LittleFS.
 # ─────────────────────────────────────────────────────────────────────────────
 
 name: Build and Release Firmware
@@ -60,6 +63,17 @@ jobs:
             firmware/src/config.h
           grep FIRMWARE_VERSION firmware/src/config.h
 
+      - name: Apply version bump in data/index.html
+        run: |
+          NEW="${{ steps.version.outputs.new }}"
+          # Bump the <meta name="ui-version" content="x.y.z"> tag
+          sed -i 's/name="ui-version" content="[^"]*"/name="ui-version" content="'"$NEW"'"/' \
+            data/index.html
+          # Bump the JS const UI_VERSION = "x.y.z"
+          sed -i 's/const UI_VERSION = "[^"]*"/const UI_VERSION = "'"$NEW"'"/' \
+            data/index.html
+          grep -E 'ui-version|UI_VERSION' data/index.html | head -4
+
       # ── 3. Cache PlatformIO packages ─────────────────────────────────────────
       - name: Cache PlatformIO packages
         uses: actions/cache@v4
@@ -89,7 +103,7 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add firmware/src/config.h
+          git add firmware/src/config.h data/index.html
           git commit -m "chore: bump firmware version to ${{ steps.version.outputs.new }} [skip ci]"
           git push
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
@@ -109,11 +123,18 @@ jobs:
 
             **Via web UI (GitHub OTA pull):**
             Open `http://<sensor-ip>`, go to **Firmware Update**, click **Check for Updates**,
-            then confirm with **Apply Update**.
+            then confirm with **Apply Update**.  Both firmware and the web UI (`index.html`)
+            are updated automatically.
 
             **Via PlatformIO / VS Code (ArduinoOTA push):**
             ```bash
             pio run -e esp32dev_ota -t upload --upload-port <device-ip-or-hostname>
             ```
-          files: .pio/build/esp32dev/firmware.bin
+            After flashing, also upload the filesystem image to update the web UI:
+            ```bash
+            pio run -e esp32dev --target uploadfs
+            ```
+          files: |
+            .pio/build/esp32dev/firmware.bin
+            data/index.html
           token: ${{ secrets.GITHUB_TOKEN }}

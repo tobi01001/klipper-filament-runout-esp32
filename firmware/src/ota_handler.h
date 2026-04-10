@@ -17,8 +17,9 @@
  *        "update-available" or "up-to-date".
  *     b. When "update-available", the user confirms in the web UI and then
  *        calls ota_github_update_request() (or POST /api/ota/update) to
- *        download and flash the "firmware.bin" asset.  The device reboots
- *        automatically after a successful flash.
+ *        download and flash the "firmware.bin" asset and, if present, update
+ *        "index.html" on LittleFS.  The device reboots automatically after a
+ *        successful firmware flash.
  *
  * MIT License – Copyright (c) 2026 tobi01001
  */
@@ -80,8 +81,35 @@ void ota_github_update_request();
 const char *ota_get_status();
 
 /**
+ * @brief Detail string for the last OTA failure.
+ *
+ * Returns "" when no failure has occurred (or after the error has been
+ * superseded by a new attempt).  Written only by the OTA background task;
+ * safe to read from any other task or the web handler ISR context.
+ *
+ * Examples:
+ *   "GitHub API HTTP -11: connection refused"
+ *   "[HTTPUpdate] HTTP error: 302"
+ *   "No firmware.bin asset in release v1.2.0"
+ */
+const char *ota_get_error();
+
+/**
  * @brief Latest release tag found during the most recent GitHub API check.
  *
  * Returns "" until a successful API response has been received.
  */
 const char *ota_get_latest_tag();
+
+/**
+ * @brief Version string read from the <meta name="ui-version"> tag in the
+ *        /index.html file currently stored on LittleFS.
+ *
+ * Returns "unknown" when LittleFS is not mounted, the file does not exist,
+ * or the version tag is absent (e.g. an old manually-uploaded index.html).
+ *
+ * The web handler uses this to populate the "UI version (LittleFS)" row in
+ * the /api/ota JSON response, letting the user verify that the on-device web
+ * UI matches the running firmware.
+ */
+const char *ota_get_lfs_ui_version();
