@@ -309,6 +309,22 @@ static void github_update_task(void * /*param*/) {
         // ── Step 3: Version check ──────────────────────────────────────────────
         if (!version_is_newer(tag)) {
             DBG_PRINTLN("[OTA] Firmware is up-to-date");
+            // Cache the index.html URL even when firmware is current so that a
+            // subsequent UI-only update task can skip the API round-trip.
+            const JsonArray utd_assets = doc["assets"].as<JsonArray>();
+            for (const JsonObject asset : utd_assets) {
+                const char *name = asset["name"] | "";
+                const char *url  = asset["browser_download_url"] | "";
+                if (strcmp(name, "index.html") == 0) {
+                    if (s_tag_mutex &&
+                        xSemaphoreTake(s_tag_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                        strncpy(s_html_url, url, sizeof(s_html_url) - 1);
+                        s_html_url[sizeof(s_html_url) - 1] = '\0';
+                        xSemaphoreGive(s_tag_mutex);
+                    }
+                    break;
+                }
+            }
             s_status = "up-to-date";
             s_task_running = false;
             vTaskDelete(nullptr);
@@ -441,6 +457,134 @@ static void github_update_task(void * /*param*/) {
     s_task_running = false;
     vTaskDelete(nullptr);
 }
+
+// ─── GitHub UI-only update background task ────────────────────────────────────
+/**
+ * Downloads the "index.html" asset from the latest GitHub release and writes
+ * it to /index.html on LittleFS.  No firmware flashing or reboot is performed.
+ * Reuses the cached html URL from a preceding check task when available.
+ */
+static void github_update_ui_task(void * /*param*/) {
+    set_error_msg("");
+    s_status = "updating-ui";
+    DBG_PRINTLN("[OTA] UI-only update requested");
+
+    if (WiFi.status() != WL_CONNECTED) {
+        DBG_PRINTLN("[OTA] WiFi not connected – aborting UI update");
+        set_error_msg("WiFi not connected");
+        s_status = "failed";
+        s_task_running = false;
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    char html_url[256] = "";
+
+    // Reuse URL cached by a preceding check task (avoids an extra API call).
+    bool have_cached = false;
+    if (s_tag_mutex && xSemaphoreTake(s_tag_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        have_cached = (s_html_url[0] != '\0');
+        if (have_cached) {
+            strncpy(html_url, s_html_url, sizeof(html_url) - 1);
+            html_url[sizeof(html_url) - 1] = '\0';
+            DBG_PRINTF("[OTA] Using cached UI URL for %s\n", s_latest_tag);
+        }
+        xSemaphoreGive(s_tag_mutex);
+    } else {
+        DBG_PRINTLN("[OTA] UI update: mutex timeout reading URL cache – will fetch API");
+    }
+
+    if (!have_cached) {
+        DBG_PRINTF("[OTA] Fetching GitHub release info at %s\n", GITHUB_API_URL);
+        WiFiClientSecure api_client;
+        api_client.setInsecure();
+
+        HTTPClient http;
+        http.begin(api_client, GITHUB_API_URL);
+        http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+        http.setTimeout(OTA_HTTP_TIMEOUT_MS);
+        http.addHeader("User-Agent", "ESP32-FilamentSensor/" FIRMWARE_VERSION);
+        http.addHeader("Accept",     "application/vnd.github+json");
+
+        const int api_code = http.GET();
+        if (api_code != HTTP_CODE_OK) {
+            DBG_PRINTF("[OTA] GitHub API error: HTTP %d\n", api_code);
+            set_error_msg("GitHub API HTTP %d: %s", api_code,
+                          http.errorToString(api_code).c_str());
+            http.end();
+            s_status = "failed";
+            s_task_running = false;
+            vTaskDelete(nullptr);
+            return;
+        }
+
+        JsonDocument filter;
+        filter["tag_name"] = true;
+        filter["assets"][0]["name"] = true;
+        filter["assets"][0]["browser_download_url"] = true;
+
+        JsonDocument doc;
+        const DeserializationError json_err =
+            deserializeJson(doc, http.getStream(),
+                            DeserializationOption::Filter(filter));
+        http.end();
+
+        if (json_err) {
+            DBG_PRINTF("[OTA] JSON parse error: %s\n", json_err.c_str());
+            set_error_msg("JSON parse: %s", json_err.c_str());
+            s_status = "failed";
+            s_task_running = false;
+            vTaskDelete(nullptr);
+            return;
+        }
+
+        const char *tag = doc["tag_name"] | "";
+        const JsonArray assets = doc["assets"].as<JsonArray>();
+        for (const JsonObject asset : assets) {
+            const char *name = asset["name"] | "";
+            const char *url  = asset["browser_download_url"] | "";
+            if (strcmp(name, "index.html") == 0) {
+                strncpy(html_url, url, sizeof(html_url) - 1);
+                html_url[sizeof(html_url) - 1] = '\0';
+                break;
+            }
+        }
+
+        // Cache for future operations.
+        if (s_tag_mutex && xSemaphoreTake(s_tag_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            strncpy(s_latest_tag, tag, sizeof(s_latest_tag) - 1);
+            s_latest_tag[sizeof(s_latest_tag) - 1] = '\0';
+            strncpy(s_html_url, html_url, sizeof(s_html_url) - 1);
+            s_html_url[sizeof(s_html_url) - 1] = '\0';
+            xSemaphoreGive(s_tag_mutex);
+        } else {
+            DBG_PRINTLN("[OTA] UI update: mutex timeout writing URL cache");
+        }
+    }
+
+    if (html_url[0] == '\0') {
+        DBG_PRINTLN("[OTA] No index.html asset found in release");
+        set_error_msg("No index.html asset in release");
+        s_status = "failed";
+        s_task_running = false;
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    DBG_PRINTF("[OTA] Downloading UI to LittleFS: %s\n", html_url);
+    if (!download_to_lfs(html_url, "/index.html")) {
+        // set_error_msg already set by download_to_lfs.
+        s_status = "failed";
+        s_task_running = false;
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    DBG_PRINTLN("[OTA] UI updated on LittleFS – no reboot required");
+    s_status = "ok";
+    s_task_running = false;
+    vTaskDelete(nullptr);
+}
 #endif
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -557,6 +701,35 @@ void ota_github_update_request() {
 
     if (ok != pdPASS) {
         DBG_PRINTLN("[OTA] Failed to create update task");
+        s_task_running = false;
+        s_status = "failed";
+    }
+#else
+    s_status = "disabled";
+#endif
+}
+
+void ota_github_update_ui_request() {
+#if ENABLE_GITHUB_OTA
+    if (s_task_running) {
+        DBG_PRINTLN("[OTA] Task already running – UI update request ignored");
+        return;
+    }
+    s_task_running = true;
+
+    // 20480 bytes: TLS handshake + JSON parse + LittleFS write call chain.
+    const BaseType_t ok = xTaskCreatePinnedToCore(
+        github_update_ui_task,
+        "OTA_UI",
+        20480,
+        nullptr,
+        2,
+        nullptr,
+        0   // Core 0
+    );
+
+    if (ok != pdPASS) {
+        DBG_PRINTLN("[OTA] Failed to create UI update task");
         s_task_running = false;
         s_status = "failed";
     }

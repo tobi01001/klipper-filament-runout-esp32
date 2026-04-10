@@ -183,6 +183,9 @@
     <button class="btn-reset" id="btn-apply" onclick="applyUpdate()" style="margin-top:6px;display:none">
       Apply Update
     </button>
+    <button class="btn-save" id="btn-update-ui" onclick="updateUiOnly()" style="margin-top:6px;display:none">
+      Update UI
+    </button>
   </div>
 
   <!-- Diagnostics Card -->
@@ -358,11 +361,19 @@
           if (!d.github_ota) {
             document.getElementById('btn-check').style.display = 'none';
             document.getElementById('btn-apply').style.display = 'none';
+            document.getElementById('btn-update-ui').style.display = 'none';
             return;
           }
           // Show "Apply Update" button only when a newer version is confirmed available.
           document.getElementById('btn-apply').style.display =
             d.status === 'update-available' ? 'block' : 'none';
+          // Show "Update UI" button whenever the LittleFS UI version doesn't match
+          // the running firmware version (version mismatch that requires UI refresh).
+          const hasUiMismatch = d.lfs_ui_version && d.version &&
+                                d.lfs_ui_version !== 'unknown' &&
+                                d.lfs_ui_version !== d.version;
+          document.getElementById('btn-update-ui').style.display =
+            hasUiMismatch ? 'block' : 'none';
         }).catch(()=>{});
     }
 
@@ -380,6 +391,7 @@
     function applyUpdate() {
       const tag = document.getElementById('ota-latest').textContent;
       if (!confirm(`Apply firmware update ${tag}?\nThe device will reboot after flashing.`)) return;
+      otaIsUiOnly = false;
       document.getElementById('ota-status').textContent = 'starting update…';
       document.getElementById('ota-error').style.display = 'none';
       document.getElementById('btn-apply').style.display = 'none';
@@ -399,8 +411,33 @@
         .catch(()=>{ document.getElementById('ota-status').textContent = '✗ Request failed'; });
     }
 
+    function updateUiOnly() {
+      if (!confirm('Download and install the latest web UI from GitHub?\nNo firmware update or reboot required.')) return;
+      otaIsUiOnly = true;
+      document.getElementById('ota-status').textContent = 'downloading UI…';
+      document.getElementById('ota-error').style.display = 'none';
+      document.getElementById('btn-update-ui').style.display = 'none';
+      otaPollRetries = 0;
+      clearTimeout(otaPollTimer);
+      fetch('/api/ota/update-ui', {method:'POST'})
+        .then(r=>r.json())
+        .then(d=>{
+          if (!d.ok) {
+            document.getElementById('ota-status').textContent = '✗ '+d.error;
+            otaIsUiOnly = false;
+          } else {
+            pollOtaStatus();
+          }
+        })
+        .catch(()=>{
+          document.getElementById('ota-status').textContent = '✗ Request failed';
+          otaIsUiOnly = false;
+        });
+    }
+
     let otaPollTimer = null;
     let otaPollRetries = 0;
+    let otaIsUiOnly = false;
     const OTA_POLL_MAX_RETRIES = 20; // ~40 s of network errors → stop polling
 
     function pollOtaStatus() {
@@ -415,12 +452,21 @@
             if (d.status === 'failed' && d.error) {
               errEl.textContent = '✗ ' + d.error;
               errEl.style.display = 'block';
+              otaIsUiOnly = false;
             } else {
               errEl.textContent = '';
               errEl.style.display = 'none';
             }
+            // UI-only update completed: reload page to serve the new index.html.
+            if (d.status === 'ok' && otaIsUiOnly) {
+              document.getElementById('ota-status').textContent = '✓ UI updated – reloading…';
+              otaIsUiOnly = false;
+              setTimeout(() => location.reload(), 2000);
+              return;
+            }
             // Keep polling while the update is in progress.
-            if (d.status === 'updating' || d.status === 'checking') {
+            if (d.status === 'updating' || d.status === 'checking' ||
+                d.status === 'updating-ui') {
               pollOtaStatus();
             }
             // On success the device reboots; on failure or terminal state stop polling.
@@ -434,6 +480,7 @@
             } else {
               document.getElementById('ota-status').textContent =
                 'status unknown – device may have rebooted';
+              otaIsUiOnly = false;
             }
           });
       }, 2000);
