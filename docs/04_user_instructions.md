@@ -212,16 +212,12 @@ parameter_nozzle_temp:
     history_field: nozzle_temperature
 
 [shell_command filament_sensor_enable]
-command: curl -s -X POST http://192.168.1.42/api/sensor
-    -H "Content-Type: application/json"
-    -d '{"enabled":true,"persist":false}'
+command: curl -s -X POST -H "Content-Type: application/json" -d '{"enabled":true,"persist":false}' http://192.168.1.42/api/sensor
 timeout: 5.0
 verbose: False
 
 [shell_command filament_sensor_disable]
-command: curl -s -X POST http://192.168.1.42/api/sensor
-    -H "Content-Type: application/json"
-    -d '{"enabled":false,"persist":false}'
+command: curl -s -X POST -H "Content-Type: application/json" -d '{"enabled":false,"persist":false}' http://192.168.1.42/api/sensor
 timeout: 5.0
 verbose: False
 
