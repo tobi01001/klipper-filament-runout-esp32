@@ -49,6 +49,7 @@
 #include "wifi_handler.h"
 #include "moonraker.h"
 #include "ota_runtime.h"
+#include "dht_sensor.h"
 
 // ─── Global shared state ──────────────────────────────────────────────────────
 static SensorConfig    g_config{};
@@ -128,6 +129,10 @@ static void core0_task(void * /*param*/) {
     // ── Initialise OLED display (Core 0 only – I²C stays on one core) ─────
     display_init(g_status_mutex, g_config_mutex, &g_status, &g_config);
 #endif
+#ifdef ENABLE_DHT
+    // ── Initialise DHT22 temperature/humidity sensor (Core 0) ─────────────
+    dht_sensor_init(g_status_mutex, g_config_mutex, &g_status, &g_config);
+#endif
 
     // ── Main protocol loop ─────────────────────────────────────────────────
 #ifdef ENABLE_OLED
@@ -158,6 +163,12 @@ static void core0_task(void * /*param*/) {
         } else {
             moonraker_set_disconnected();
         }
+
+#ifdef ENABLE_DHT
+        // DHT22 tick: reads at most every DHT_READ_INTERVAL_MS (non-blocking
+        // except for the ~20 ms single-shot sensor read itself).
+        dht_sensor_tick();
+#endif
 
 #ifdef ENABLE_OLED
         if ((xTaskGetTickCount() - last_display_update) >=

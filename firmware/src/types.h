@@ -39,6 +39,9 @@ struct SensorConfig {
     bool     sensor_enabled;         // Enable/disable fault triggering at runtime
     bool     display_enabled;        // Enable/disable the OLED display at runtime
     char     fault_gcode[64];        // GCODE sent to Moonraker via WebSocket on fault
+#ifdef ENABLE_DHT
+    bool     dht_enabled;            // Enable/disable DHT22 temperature+humidity readings
+#endif
 };
 
 // ─── Live Status (shared read by web handler) ─────────────────────────────────
@@ -55,6 +58,11 @@ struct SensorStatus {
     bool        moonraker_stale;       // No recent extruder update
     char        klippy_state[16];      // Moonraker server.info klippy_state
     char        ip_address[16];   // Current station IP (dotted quad)
+#ifdef ENABLE_DHT
+    float       dht_temperature;  // Ambient temperature in °C (valid when dht_valid is true)
+    float       dht_humidity;     // Relative humidity in %RH (valid when dht_valid is true)
+    bool        dht_valid;        // true when the last DHT22 read succeeded
+#endif
 };
 
 // ─── Calibration State Machine ───────────────────────────────────────────────────

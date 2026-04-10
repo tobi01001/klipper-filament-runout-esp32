@@ -6,6 +6,7 @@
 #include "wifi_handler.h"
 #include "config.h"
 #include "debug_log.h"
+#include "dht_sensor.h"
 
 #include <Arduino.h>
 #include <WebServer.h>
@@ -135,6 +136,11 @@ static void handle_status() {
     doc["klippy_state"]   = snap.klippy_state;
     doc["nozzle_temp"]    = snap.nozzle_temp;
     doc["nozzle_target"]  = snap.nozzle_target;
+#ifdef ENABLE_DHT
+    doc["dht_temp"]       = snap.dht_temperature;
+    doc["dht_humidity"]   = snap.dht_humidity;
+    doc["dht_valid"]      = snap.dht_valid;
+#endif
 
     String out;
     serializeJson(doc, out);
@@ -161,6 +167,9 @@ static void handle_get_config() {
     doc["sensor_enabled"]  = snap.sensor_enabled;
     doc["display_enabled"]  = snap.display_enabled;
     doc["fault_gcode"]      = snap.fault_gcode;
+#ifdef ENABLE_DHT
+    doc["dht_enabled"]      = snap.dht_enabled;
+#endif
 
     String out;
     serializeJson(doc, out);
@@ -241,6 +250,10 @@ static void handle_post_config() {
             fault_detector_reset();
           }
         }
+#ifdef ENABLE_DHT
+        if (doc["dht_enabled"].is<bool>())
+            s_config->dht_enabled = doc["dht_enabled"].as<bool>();
+#endif
 
         nvs_save(*s_config);
         xSemaphoreGive(s_config_mutex);
@@ -475,8 +488,33 @@ static void handle_diag() {
   s_server.send(200, "application/json", out);
 }
 
-static void handle_not_found() {
-  const String uri = s_server.uri();
+#ifdef ENABLE_DHT
+static void handle_dht() {
+    SensorStatus snap{};
+    if (xSemaphoreTake(s_status_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        snap = *s_status;
+        xSemaphoreGive(s_status_mutex);
+    }
+
+    bool dht_enabled = true;
+    if (xSemaphoreTake(s_config_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        dht_enabled = s_config->dht_enabled;
+        xSemaphoreGive(s_config_mutex);
+    }
+
+    JsonDocument doc;
+    doc["enabled"]      = dht_enabled;
+    doc["valid"]        = snap.dht_valid;
+    doc["temp"]         = snap.dht_temperature;
+    doc["humidity"]     = snap.dht_humidity;
+
+    String out;
+    serializeJson(doc, out);
+    s_server.send(200, "application/json", out);
+}
+#endif // ENABLE_DHT
+
+static void handle_not_found() {  const String uri = s_server.uri();
   if (uri.startsWith("/api/")) {
     s_server.send(404, "application/json", "{\"ok\":false,\"error\":\"not found\"}");
     return;
@@ -528,6 +566,9 @@ void web_init(SemaphoreHandle_t status_mutex,
     s_server.on("/api/ota/check",  HTTP_POST, handle_ota_check);
     s_server.on("/api/ota/update", HTTP_POST, handle_ota_update);
     s_server.on("/api/diag",       HTTP_GET,  handle_diag);
+#ifdef ENABLE_DHT
+    s_server.on("/api/dht",        HTTP_GET,  handle_dht);
+#endif
     s_server.onNotFound(handle_not_found);
 
     s_server.begin();

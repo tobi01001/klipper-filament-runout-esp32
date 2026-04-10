@@ -70,6 +70,8 @@
       <tr><td>Last motion</td><td id="motion-ago">-</td></tr>
       <tr><td>Fault active</td><td id="fault">-</td></tr>
       <tr><td>IP address</td><td id="ip">-</td></tr>
+      <tr><td>Temperature</td><td id="dht-temp">-</td></tr>
+      <tr><td>Humidity</td><td id="dht-hum">-</td></tr>
     </table>
     <div class="vel-bar"><div class="vel-bar-inner" id="vel-bar" style="width:0%"></div></div>
     <button class="btn-reset" onclick="resetFault()">Reset Fault</button>
@@ -132,6 +134,10 @@
     <div class="toggle-row">
       <input type="checkbox" id="disp-en"/>
       <label for="disp-en">Enable OLED display (SSD1306 128&#x00D7;64)</label>
+    </div>
+    <div class="toggle-row">
+      <input type="checkbox" id="dht-en"/>
+      <label for="dht-en">Enable DHT22 environment sensor (temperature &amp; humidity)</label>
     </div>
     <button class="btn-save" onclick="saveConfig()">Save &amp; Apply</button>
     <button class="btn-reset" onclick="rebootDevice()" style="margin-top:6px">Restart Device</button>
@@ -237,6 +243,21 @@
           const calNozzle = document.getElementById('cal-nozzle');
           calNozzle.textContent = 'Nozzle: ' + noz.toFixed(1) + ' °C / target ' + nozTarget.toFixed(1) + ' °C';
           calNozzle.style.color = (nozTarget > 0 && noz >= nozTarget - 5.0) ? '#4f4' : '#9ad';
+          // DHT22 temperature + humidity
+          const dhtValid = d.dht_valid ?? false;
+          const dhtTempEl = document.getElementById('dht-temp');
+          const dhtHumEl  = document.getElementById('dht-hum');
+          if (dhtValid) {
+            dhtTempEl.textContent = (d.dht_temp ?? 0).toFixed(1) + ' °C';
+            dhtHumEl.textContent  = (d.dht_humidity ?? 0).toFixed(1) + ' %RH';
+            dhtTempEl.style.color = '';
+            dhtHumEl.style.color  = '';
+          } else {
+            dhtTempEl.textContent = 'no reading';
+            dhtHumEl.textContent  = 'no reading';
+            dhtTempEl.style.color = '#666';
+            dhtHumEl.style.color  = '#666';
+          }
           const pct = Math.min(100, Math.abs(d.enc_vel) / maxVel * 100);
           document.getElementById('vel-bar').style.width   = pct + '%';
         }).catch(()=>{});
@@ -256,6 +277,7 @@
           document.getElementById('ota-host').value   = d.ota_hostname;
           document.getElementById('sensor-en').checked = (d.sensor_enabled !== false);
           document.getElementById('disp-en').checked  = d.display_enabled;
+          document.getElementById('dht-en').checked   = (d.dht_enabled !== false);
           document.getElementById('fault-gcode').value = d.fault_gcode || 'PAUSE';
           maxVel = Math.max(10, d.min_ext_vel * 20);
         }).catch(()=>{});
@@ -275,6 +297,7 @@
         ota_password:     document.getElementById('ota-pass').value,
         sensor_enabled:   document.getElementById('sensor-en').checked,
         display_enabled:  document.getElementById('disp-en').checked,
+        dht_enabled:      document.getElementById('dht-en').checked,
         fault_gcode:      document.getElementById('fault-gcode').value,
       };
       fetch('/api/config', {method:'POST',headers:{'Content-Type':'application/json'},
