@@ -17,10 +17,11 @@
  *  Triggered via the web UI or POST /api/ota/update.
  *  Steps performed by the background task:
  *    1. HTTPS GET to the GitHub Releases API for the latest release.
- *    2. Parse tag_name and find the "firmware.bin" browser_download_url.
+ *    2. Parse tag_name and find the "firmware.bin" and "index.html" asset URLs.
  *    3. Compare tag against FIRMWARE_VERSION (simple x.y.z integers).
- *    4. If newer, stream the binary via httpUpdate to the inactive partition.
- *    5. Reboot on success; set status "failed" on error.
+ *    4. If newer, download "index.html" and write it to LittleFS (if asset present).
+ *    5. Stream "firmware.bin" via httpUpdate to the inactive partition.
+ *    6. Reboot on success; set status "failed" on error.
  *
  * Note: HTTPS connections use setInsecure() (no certificate validation).
  *       This is acceptable for a local-network embedded device but should be
@@ -46,6 +47,7 @@
 #include <HTTPClient.h>
 #include <HTTPUpdate.h>
 #include <WiFiClientSecure.h>
+#include <LittleFS.h>
 #endif
 
 // ─── Module state ──────────────────────────────────────────────────────────────
@@ -83,7 +85,103 @@ static void set_error_msg(const char *fmt, ...) {
     }
 }
 
-// ─── Version comparison ────────────────────────────────────────────────────────
+// ─── LittleFS UI download helper ─────────────────────────────────────────────
+/**
+ * @brief Download @p url and write the response body to @p lfs_path on LittleFS.
+ *
+ * Uses an atomic write pattern: downloads to a temp file first, then renames
+ * to the target path so the live file is never left in a truncated state.
+ * Returns true on success.  On failure, sets the error message and returns
+ * false; the live file at @p lfs_path is left untouched.
+ */
+static bool download_to_lfs(const char *url, const char *lfs_path) {
+    // Derive the temp path by appending ".tmp" to the target path so this
+    // helper works correctly for any LittleFS destination (not just /index.html).
+    char tmp_path[64];
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", lfs_path);
+    LittleFS.remove(tmp_path); // clean any stale temp file from a previous attempt
+
+    WiFiClientSecure client;
+    client.setInsecure();
+
+    HTTPClient http;
+    http.begin(client, url);
+    http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+    http.setTimeout(OTA_HTTP_TIMEOUT_MS);
+    http.addHeader("User-Agent", "ESP32-FilamentSensor/" FIRMWARE_VERSION);
+
+    const int code = http.GET();
+    if (code != HTTP_CODE_OK) {
+        DBG_PRINTF("[OTA] UI download HTTP %d\n", code);
+        set_error_msg("UI download HTTP %d: %s", code,
+                      http.errorToString(code).c_str());
+        http.end();
+        return false;
+    }
+
+    File f = LittleFS.open(tmp_path, "w");
+    if (!f) {
+        DBG_PRINTLN("[OTA] UI: LittleFS open for write failed");
+        set_error_msg("UI: LittleFS open failed");
+        http.end();
+        return false;
+    }
+
+    WiFiClient *stream   = http.getStreamPtr();
+    int32_t  remaining   = http.getSize(); // -1 for chunked encoding
+    int32_t  written     = 0;
+    uint8_t  buf[512];
+    const uint32_t deadline = millis() + OTA_HTTP_TIMEOUT_MS;
+
+    while (http.connected() && (remaining > 0 || remaining == -1)) {
+        const int avail = stream->available();
+        if (avail > 0) {
+            const size_t chunk_size = (size_t)(avail < (int)sizeof(buf)
+                                               ? avail : (int)sizeof(buf));
+            const int chunk = stream->readBytes(buf, chunk_size);
+            if (chunk > 0) {
+                if (f.write(buf, (size_t)chunk) != (size_t)chunk) {
+                    f.close();
+                    LittleFS.remove(tmp_path);
+                    http.end();
+                    set_error_msg("UI: LittleFS write error");
+                    return false;
+                }
+                written += chunk;
+                if (remaining > 0) remaining -= chunk;
+            }
+        } else if (millis() > deadline) {
+            DBG_PRINTLN("[OTA] UI download timed out");
+            f.close();
+            LittleFS.remove(tmp_path);
+            http.end();
+            set_error_msg("UI download timed out");
+            return false;
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
+    }
+
+    f.close();
+    http.end();
+
+    if (written == 0) {
+        LittleFS.remove(tmp_path);
+        set_error_msg("UI: empty response");
+        return false;
+    }
+
+    // Atomically replace the live file.
+    LittleFS.remove(lfs_path);
+    if (!LittleFS.rename(tmp_path, lfs_path)) {
+        LittleFS.remove(tmp_path);
+        set_error_msg("UI: LittleFS rename failed");
+        return false;
+    }
+
+    DBG_PRINTF("[OTA] UI updated: %d bytes written to %s\n", (int)written, lfs_path);
+    return true;
+}
 /**
  * @brief Return true when @p tag represents a version newer than FIRMWARE_VERSION.
  *
@@ -184,16 +282,19 @@ static void github_update_task(void * /*param*/) {
         return;
     }
 
-    // ── Step 4: Find the firmware.bin asset URL ────────────────────────────
+    // ── Step 4: Find the firmware.bin and index.html asset URLs ───────────────
     char asset_url[256] = "";
+    char html_url[256]  = "";
     const JsonArray assets = doc["assets"].as<JsonArray>();
     for (const JsonObject asset : assets) {
         const char *name = asset["name"] | "";
+        const char *url  = asset["browser_download_url"] | "";
         if (strcmp(name, "firmware.bin") == 0) {
-            const char *url = asset["browser_download_url"] | "";
             strncpy(asset_url, url, sizeof(asset_url) - 1);
             asset_url[sizeof(asset_url) - 1] = '\0';
-            break;
+        } else if (strcmp(name, "index.html") == 0) {
+            strncpy(html_url, url, sizeof(html_url) - 1);
+            html_url[sizeof(html_url) - 1] = '\0';
         }
     }
 
@@ -206,10 +307,27 @@ static void github_update_task(void * /*param*/) {
         return;
     }
 
-    DBG_PRINTF("[OTA] Downloading: %s\n", asset_url);
+    DBG_PRINTF("[OTA] Downloading firmware: %s\n", asset_url);
     s_status = "updating";
 
-    // ── Step 5: Stream firmware via HTTPUpdate ─────────────────────────────
+    // ── Step 5: Update index.html on LittleFS (before firmware flash) ─────────
+    // The UI file is updated first so that on reboot the new firmware and the
+    // matching UI are both in place.  A failure here is non-fatal: firmware
+    // flashing still proceeds.
+    if (html_url[0] != '\0') {
+        DBG_PRINTF("[OTA] Downloading UI: %s\n", html_url);
+        if (!download_to_lfs(html_url, "/index.html")) {
+            // set_error_msg already contains the UI-download error detail.
+            // Do NOT clear it here: if firmware flash also fails, it will
+            // overwrite with the firmware error; if it succeeds, the device
+            // reboots and the UI error becomes irrelevant.
+            DBG_PRINTLN("[OTA] UI update failed (non-fatal) – proceeding with firmware flash");
+        }
+    } else {
+        DBG_PRINTLN("[OTA] No index.html asset in release – UI not updated");
+    }
+
+    // ── Step 6: Stream firmware via HTTPUpdate ─────────────────────────────
     WiFiClientSecure fw_client;
     fw_client.setInsecure();
 
@@ -417,4 +535,41 @@ const char *ota_get_latest_tag() {
         xSemaphoreGive(s_tag_mutex);
     }
     return buf;
+}
+
+const char *ota_get_lfs_ui_version() {
+    static char ver[32] = "";
+    ver[0] = '\0';
+
+    // The version is embedded as <meta name="ui-version" content="x.y.z"> near
+    // the top of /index.html.  Reading only the first 512 bytes is enough.
+#if ENABLE_GITHUB_OTA
+    File f = LittleFS.open("/index.html", "r");
+    if (!f) {
+        strncpy(ver, "unknown", sizeof(ver) - 1);
+        return ver;
+    }
+
+    char head[512];
+    const int n = f.readBytes(head, sizeof(head) - 1);
+    head[n] = '\0';
+    f.close();
+
+    // Pattern: <meta name="ui-version" content="1.2.3">
+    const char *needle = "ui-version\" content=\"";
+    const char *found  = strstr(head, needle);
+    if (found) {
+        const char *start = found + strlen(needle);
+        const char *end   = strchr(start, '"');
+        if (end) {
+            size_t vlen = (size_t)(end - start);
+            if (vlen >= sizeof(ver)) vlen = sizeof(ver) - 1;
+            strncpy(ver, start, vlen);
+            ver[vlen] = '\0';
+            return ver;
+        }
+    }
+#endif
+    strncpy(ver, "unknown", sizeof(ver) - 1);
+    return ver;
 }

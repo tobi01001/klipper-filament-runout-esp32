@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="ui-version" content="1.1.1" />
   <title>Filament Runout Sensor</title>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
@@ -171,6 +172,7 @@
     <h2>Firmware Update</h2>
     <table>
       <tr><td>Installed version</td><td id="ota-ver">-</td></tr>
+      <tr><td>UI version (LittleFS)</td><td id="ota-ui-ver">-</td></tr>
       <tr><td>Latest release</td>   <td id="ota-latest">-</td></tr>
       <tr><td>Status</td>           <td id="ota-status">-</td></tr>
     </table>
@@ -205,6 +207,7 @@
   </div>
 
   <script>
+    const UI_VERSION = "1.1.1"; // bumped automatically by release.yml on each GitHub release
     let maxVel = 10;
 
     function badge(state) {
@@ -330,6 +333,17 @@
           document.getElementById('ota-ver').textContent    = d.version;
           document.getElementById('ota-latest').textContent = d.latest_tag || '—';
           document.getElementById('ota-status').textContent = d.status;
+
+          // Show UI (LittleFS) version; warn when it differs from firmware version.
+          const uiVerEl = document.getElementById('ota-ui-ver');
+          const lfsVer  = d.lfs_ui_version || '—';
+          if (d.lfs_ui_version && d.version && d.lfs_ui_version !== d.version) {
+            uiVerEl.textContent = lfsVer + ' ⚠ mismatch';
+            uiVerEl.style.color = '#fa0';
+          } else {
+            uiVerEl.textContent = lfsVer;
+            uiVerEl.style.color = '';
+          }
 
           // Show error detail when failed, hide otherwise.
           const errEl = document.getElementById('ota-error');
