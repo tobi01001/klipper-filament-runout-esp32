@@ -34,6 +34,8 @@
 #include "display_handler.h"
 #include "debug_log.h"
 
+#include <Arduino.h>
+#include <stdarg.h>
 #include <ArduinoOTA.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -52,12 +54,34 @@ static char                 s_latest_tag[32] = "";
 static volatile bool        s_task_running   = false;
 // Mutex protecting s_latest_tag (written by OTA task, read by web handler task).
 static SemaphoreHandle_t    s_tag_mutex      = nullptr;
+// Last error detail string – populated on every failure, cleared on new attempt.
+// Exposed via ota_get_error() so the web UI can show more than "failed".
+static char                 s_error_msg[128] = "";
 
 // ─── Task mode ────────────────────────────────────────────────────────────────
 // When true the task only checks the latest release without flashing.
 static volatile bool        s_check_only     = false;
 
 #if ENABLE_GITHUB_OTA
+
+// ─── Error message helper ─────────────────────────────────────────────────────
+// Writes the error string under s_tag_mutex so ota_get_error() can read it from
+// any task without a torn read.  Must only be called from the OTA task context.
+static void set_error_msg(const char *fmt, ...) {
+    char tmp[128];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(tmp, sizeof(tmp), fmt, ap);
+    va_end(ap);
+
+    if (s_tag_mutex && xSemaphoreTake(s_tag_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        strncpy(s_error_msg, tmp, sizeof(s_error_msg) - 1);
+        s_error_msg[sizeof(s_error_msg) - 1] = '\0';
+        xSemaphoreGive(s_tag_mutex);
+    } else {
+        DBG_PRINTLN("[OTA] set_error_msg: mutex timeout – error detail not stored");
+    }
+}
 
 // ─── Version comparison ────────────────────────────────────────────────────────
 /**
@@ -83,6 +107,7 @@ static bool version_is_newer(const char *tag) {
 
 // ─── GitHub OTA background task ───────────────────────────────────────────────
 static void github_update_task(void * /*param*/) {
+    set_error_msg(""); // clear stale error from previous attempt
     s_status = "checking";
     DBG_PRINTF("[OTA] Checking GitHub releases at %s\n", GITHUB_API_URL);
 
@@ -99,6 +124,8 @@ static void github_update_task(void * /*param*/) {
     const int api_code = http.GET();
     if (api_code != HTTP_CODE_OK) {
         DBG_PRINTF("[OTA] GitHub API error: HTTP %d\n", api_code);
+        set_error_msg("GitHub API HTTP %d: %s", api_code,
+                      http.errorToString(api_code).c_str());
         http.end();
         s_status = "failed";
         s_task_running = false;
@@ -121,6 +148,7 @@ static void github_update_task(void * /*param*/) {
 
     if (json_err) {
         DBG_PRINTF("[OTA] JSON parse error: %s\n", json_err.c_str());
+        set_error_msg("JSON parse: %s", json_err.c_str());
         s_status = "failed";
         s_task_running = false;
         vTaskDelete(nullptr);
@@ -171,6 +199,7 @@ static void github_update_task(void * /*param*/) {
 
     if (asset_url[0] == '\0') {
         DBG_PRINTLN("[OTA] No firmware.bin asset found in release");
+        set_error_msg("No firmware.bin asset in release %s", tag);
         s_status = "failed";
         s_task_running = false;
         vTaskDelete(nullptr);
@@ -184,7 +213,11 @@ static void github_update_task(void * /*param*/) {
     WiFiClientSecure fw_client;
     fw_client.setInsecure();
 
-    httpUpdate.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    // HTTPC_FORCE_FOLLOW_REDIRECTS is required: GitHub release asset URLs return
+    // a 302 redirect to objects.githubusercontent.com.  STRICT mode also follows
+    // GET→GET redirects in theory, but FORCE is unambiguous and more robust
+    // across ESP32 Arduino framework versions.
+    httpUpdate.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
     httpUpdate.rebootOnUpdate(true); // reboot automatically on success
 
 #ifdef ENABLE_OLED
@@ -222,14 +255,16 @@ static void github_update_task(void * /*param*/) {
 #endif
             break;
         case HTTP_UPDATE_FAILED:
-        default:
-            DBG_PRINTF("[OTA] Update failed: %s\n",
-                          httpUpdate.getLastErrorString().c_str());
+        default: {
+            const String err_str = httpUpdate.getLastErrorString();
+            DBG_PRINTF("[OTA] Update failed: %s\n", err_str.c_str());
+            set_error_msg("%s", err_str.c_str());
             s_status = "failed";
 #ifdef ENABLE_OLED
             display_set_ota_active(false);
 #endif
             break;
+        }
     }
 
     s_task_running = false;
@@ -334,15 +369,15 @@ void ota_github_update_request() {
     s_task_running = true;
     s_check_only   = false;
 
-    // Stack size 12288 bytes: TLS handshake (WiFiClientSecure) alone needs ~6 KB;
-    // HTTPClient, JSON document, and HTTPUpdate consume the remainder.
-    // Runs at priority 2, below the sensor tasks (5/10) so it cannot starve them.
-    // Pinned to Core 0 so that I2C/display calls stay on the same core as the
-    // display driver (U8g2 hardware I2C is not safe across cores).
+    // Stack size 20480 bytes: the update path runs a full TLS handshake to the
+    // GitHub CDN (objects.githubusercontent.com) on top of the API TLS session,
+    // plus HTTPUpdate internals and the ESP32 flash-write call chain.  12 KB is
+    // sufficient for check-only; the extra 8 KB covers the deeper call stack of
+    // HTTPUpdate::runUpdate() → HTTPClient → WiFiClientSecure → mbedTLS.
     const BaseType_t ok = xTaskCreatePinnedToCore(
         github_update_task,
         "OTA_GitHub",
-        12288,
+        20480,
         nullptr,
         2, // lower priority than protocol tasks
         nullptr,
@@ -361,6 +396,16 @@ void ota_github_update_request() {
 
 const char *ota_get_status() {
     return (const char *)s_status;
+}
+
+const char *ota_get_error() {
+    static char buf[128] = "";
+    if (s_tag_mutex && xSemaphoreTake(s_tag_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        strncpy(buf, s_error_msg, sizeof(buf) - 1);
+        buf[sizeof(buf) - 1] = '\0';
+        xSemaphoreGive(s_tag_mutex);
+    }
+    return buf;
 }
 
 const char *ota_get_latest_tag() {

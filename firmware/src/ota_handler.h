@@ -80,6 +80,20 @@ void ota_github_update_request();
 const char *ota_get_status();
 
 /**
+ * @brief Detail string for the last OTA failure.
+ *
+ * Returns "" when no failure has occurred (or after the error has been
+ * superseded by a new attempt).  Written only by the OTA background task;
+ * safe to read from any other task or the web handler ISR context.
+ *
+ * Examples:
+ *   "GitHub API HTTP -11: connection refused"
+ *   "[HTTPUpdate] HTTP error: 302"
+ *   "No firmware.bin asset in release v1.2.0"
+ */
+const char *ota_get_error();
+
+/**
  * @brief Latest release tag found during the most recent GitHub API check.
  *
  * Returns "" until a successful API response has been received.

@@ -415,6 +415,7 @@ static void handle_ota_get() {
     doc["version"]    = FIRMWARE_VERSION;
     doc["latest_tag"] = ota_get_latest_tag();
     doc["status"]     = ota_get_status();
+    doc["error"]      = ota_get_error();
   doc["github_ota"] = (bool)ENABLE_GITHUB_OTA;
 
     String out;

@@ -174,6 +174,7 @@
       <tr><td>Latest release</td>   <td id="ota-latest">-</td></tr>
       <tr><td>Status</td>           <td id="ota-status">-</td></tr>
     </table>
+    <div id="ota-error" style="font-size:.8rem;color:#f66;margin-top:6px;word-break:break-word;display:none"></div>
     <button class="btn-save" id="btn-check" onclick="checkForUpdates()" style="margin-top:10px">
       Check for Updates
     </button>
@@ -329,6 +330,17 @@
           document.getElementById('ota-ver').textContent    = d.version;
           document.getElementById('ota-latest').textContent = d.latest_tag || '—';
           document.getElementById('ota-status').textContent = d.status;
+
+          // Show error detail when failed, hide otherwise.
+          const errEl = document.getElementById('ota-error');
+          if (d.status === 'failed' && d.error) {
+            errEl.textContent = '✗ ' + d.error;
+            errEl.style.display = 'block';
+          } else {
+            errEl.textContent = '';
+            errEl.style.display = 'none';
+          }
+
           if (!d.github_ota) {
             document.getElementById('btn-check').style.display = 'none';
             document.getElementById('btn-apply').style.display = 'none';
@@ -355,14 +367,62 @@
       const tag = document.getElementById('ota-latest').textContent;
       if (!confirm(`Apply firmware update ${tag}?\nThe device will reboot after flashing.`)) return;
       document.getElementById('ota-status').textContent = 'starting update…';
+      document.getElementById('ota-error').style.display = 'none';
       document.getElementById('btn-apply').style.display = 'none';
+      otaPollRetries = 0;
+      clearTimeout(otaPollTimer); // cancel any in-flight poll from a previous attempt
       fetch('/api/ota/update', {method:'POST'})
         .then(r=>r.json())
         .then(d=>{
-          if (!d.ok) document.getElementById('ota-status').textContent = '✗ '+d.error;
-          else document.getElementById('ota-status').textContent = 'downloading…';
+          if (!d.ok) {
+            document.getElementById('ota-status').textContent = '✗ '+d.error;
+          } else {
+            document.getElementById('ota-status').textContent = 'downloading…';
+            // Poll OTA status every 2 s so the user sees progress and any error detail.
+            pollOtaStatus();
+          }
         })
         .catch(()=>{ document.getElementById('ota-status').textContent = '✗ Request failed'; });
+    }
+
+    let otaPollTimer = null;
+    let otaPollRetries = 0;
+    const OTA_POLL_MAX_RETRIES = 20; // ~40 s of network errors → stop polling
+
+    function pollOtaStatus() {
+      clearTimeout(otaPollTimer);
+      otaPollTimer = setTimeout(function() {
+        fetch('/api/ota')
+          .then(r=>r.json())
+          .then(d=>{
+            otaPollRetries = 0; // reset counter on successful response
+            document.getElementById('ota-status').textContent = d.status;
+            const errEl = document.getElementById('ota-error');
+            if (d.status === 'failed' && d.error) {
+              errEl.textContent = '✗ ' + d.error;
+              errEl.style.display = 'block';
+            } else {
+              errEl.textContent = '';
+              errEl.style.display = 'none';
+            }
+            // Keep polling while the update is in progress.
+            if (d.status === 'updating' || d.status === 'checking') {
+              pollOtaStatus();
+            }
+            // On success the device reboots; on failure or terminal state stop polling.
+          })
+          .catch(()=>{
+            // Network error during update most likely means the device rebooted
+            // (successful OTA) or is temporarily unreachable.
+            otaPollRetries++;
+            if (otaPollRetries < OTA_POLL_MAX_RETRIES) {
+              pollOtaStatus();
+            } else {
+              document.getElementById('ota-status').textContent =
+                'status unknown – device may have rebooted';
+            }
+          });
+      }, 2000);
     }
 
     function showMsg(text, ok) {
