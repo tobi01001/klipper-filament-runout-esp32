@@ -165,9 +165,28 @@
 #define NVS_KEY_SENSOR_EN "sensor_en"
 #define NVS_KEY_FAULT_GCODE "fault_gcode"
 
-// ─── Firmware Version ─────────────────────────────────────────────────────────
+// ─── DHT22 Environment Sensor (temperature + humidity) ───────────────────────
+// The DHT22 sensor is enabled by default.  To exclude all DHT22 code at compile
+// time (saves ~15 kB flash and ~0.5 kB RAM), either:
+//   • Pass -DDISABLE_DHT in build_flags (platformio.ini) – preferred.
+//   • Or comment out the #define ENABLE_DHT line below.
+// When enabled the device reads temperature and humidity every DHT_READ_INTERVAL_MS
+// and exposes the values via /api/status and /api/dht.
+#ifndef DISABLE_DHT
+#define ENABLE_DHT
+#endif
+
+#ifdef ENABLE_DHT
+#define DHT_PIN              4        // GPIO pin connected to DHT22 data line
+                                      // GPIO 4 is unused by other peripherals on the
+                                      // standard 38-pin ESP32 dev board wiring.
+#define DHT_READ_INTERVAL_MS 3000UL   // Read period – DHT22 minimum sampling: 2 s
+#define DEFAULT_DHT_ENABLED  true     // Enable DHT22 readings on first boot
+#endif
+
+
 // Bump this when cutting a new GitHub release so the OTA checker can compare.
-#define FIRMWARE_VERSION  "1.0.5"
+#define FIRMWARE_VERSION  "1.1.0"
 
 // ─── OTA (Over-The-Air Update) ────────────────────────────────────────────────
 // mDNS hostname advertised by ArduinoOTA; reachable as <OTA_HOSTNAME>.local on
@@ -190,3 +209,4 @@
 // Maximum time to wait for the GitHub API or asset download (ms).
 #define OTA_HTTP_TIMEOUT_MS  20000
 #define NVS_KEY_DISP_EN  "disp_en"
+#define NVS_KEY_DHT_EN   "dht_en"

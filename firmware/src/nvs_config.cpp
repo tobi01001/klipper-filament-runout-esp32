@@ -37,6 +37,9 @@ void nvs_load(SensorConfig &cfg) {
 #else
         cfg.display_enabled  = false;
 #endif
+#ifdef ENABLE_DHT
+        cfg.dht_enabled = DEFAULT_DHT_ENABLED;
+#endif
         nvs_save(cfg);
         return;
     }
@@ -79,6 +82,10 @@ void nvs_load(SensorConfig &cfg) {
     cfg.display_enabled = false;
 #endif
 
+#ifdef ENABLE_DHT
+    cfg.dht_enabled = prefs.getBool(NVS_KEY_DHT_EN, DEFAULT_DHT_ENABLED);
+#endif
+
     prefs.end();
     DBG_PRINTLN("[NVS] Configuration loaded from NVS");
 }
@@ -103,6 +110,9 @@ void nvs_save(const SensorConfig &cfg) {
     prefs.putBool  (NVS_KEY_SENSOR_EN, cfg.sensor_enabled);
     prefs.putString(NVS_KEY_FAULT_GCODE, cfg.fault_gcode);
     prefs.putBool  (NVS_KEY_DISP_EN, cfg.display_enabled);
+#ifdef ENABLE_DHT
+    prefs.putBool  (NVS_KEY_DHT_EN, cfg.dht_enabled);
+#endif
 
     prefs.end();
     DBG_PRINTLN("[NVS] Configuration saved to NVS");

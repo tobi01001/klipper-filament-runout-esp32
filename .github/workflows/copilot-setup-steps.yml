@@ -27,3 +27,18 @@ jobs:
 
       - name: Install PlatformIO
         run: pip install --upgrade platformio
+
+      # Pre-download the ESP32 toolchain and all project libraries so the agent
+      # never needs to fetch them (200+ MB) during its session.  This makes
+      # build/test steps deterministic and fast.
+      - name: Cache PlatformIO toolchain and libraries
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-esp32-${{ hashFiles('platformio.ini') }}
+          restore-keys: pio-esp32-
+
+      - name: Pre-build firmware (warms toolchain + library cache)
+        run: |
+          cd $GITHUB_WORKSPACE
+          pio run -e esp32dev
