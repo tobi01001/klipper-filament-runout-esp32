@@ -110,24 +110,31 @@ static void handle_status() {
         xSemaphoreGive(s_status_mutex);
     }
 
+    bool sensor_enabled = true;
+    if (xSemaphoreTake(s_config_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        sensor_enabled = s_config->sensor_enabled;
+        xSemaphoreGive(s_config_mutex);
+    }
+
     const uint32_t motion_ago = millis() - snap.encoder.timestamp_ms;
 
     JsonDocument doc;
-    doc["state"]       = state_name(snap.state);
-    doc["enc_vel"]     = snap.encoder.velocity_mm_s;
-    doc["ext_vel"]     = snap.extruder_vel;
-    doc["ticks"]       = snap.encoder.tick_count;
-    doc["direction"]   = snap.encoder.direction;
-    doc["motion_ago_ms"] = motion_ago;
-    doc["fault"]       = snap.fault_active;
-    doc["wifi"]        = snap.wifi_connected;
-    doc["ip"]          = snap.ip_address;
-    doc["mr_connected"] = snap.moonraker_connected;
-    doc["mr_subscribed"] = snap.moonraker_subscribed;
-    doc["mr_stale"] = snap.moonraker_stale;
-    doc["klippy_state"] = snap.klippy_state;
-    doc["nozzle_temp"] = snap.nozzle_temp;
-    doc["nozzle_target"] = snap.nozzle_target;
+    doc["state"]          = state_name(snap.state);
+    doc["sensor_enabled"] = sensor_enabled;
+    doc["enc_vel"]        = snap.encoder.velocity_mm_s;
+    doc["ext_vel"]        = snap.extruder_vel;
+    doc["ticks"]          = snap.encoder.tick_count;
+    doc["direction"]      = snap.encoder.direction;
+    doc["motion_ago_ms"]  = motion_ago;
+    doc["fault"]          = snap.fault_active;
+    doc["wifi"]           = snap.wifi_connected;
+    doc["ip"]             = snap.ip_address;
+    doc["mr_connected"]   = snap.moonraker_connected;
+    doc["mr_subscribed"]  = snap.moonraker_subscribed;
+    doc["mr_stale"]       = snap.moonraker_stale;
+    doc["klippy_state"]   = snap.klippy_state;
+    doc["nozzle_temp"]    = snap.nozzle_temp;
+    doc["nozzle_target"]  = snap.nozzle_target;
 
     String out;
     serializeJson(doc, out);
