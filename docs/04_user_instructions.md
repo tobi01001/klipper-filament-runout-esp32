@@ -129,6 +129,8 @@ meaningful velocity readings.
 
 ## Step 5 – Configure Klipper
 
+### Option A – GPIO pin (classic wired approach)
+
 Add the following to your `printer.cfg` (adjust the GPIO pin to match the
 Raspberry Pi pin connected to ESP32 GPIO 27):
 
@@ -151,6 +153,129 @@ sudo systemctl restart klipper
 
 Verify in Mainsail / Fluidd that the **filament_runout** sensor shows as
 *Detected: False* during normal operation.
+
+### Option B – Moonraker HTTP Sensor (no wiring required)
+
+This option uses the ESP32's existing Wi-Fi connection.  Moonraker polls
+`/api/status` asynchronously (non-blocking – the print is never delayed).
+Sensor data appears in the Mainsail **Sensors** panel and can be queried via
+the Moonraker REST API.
+
+#### Prerequisites
+
+| Item | Notes |
+|------|-------|
+| Moonraker ≥ 0.9.3 | HTTP sensor type |
+| `curl` on the Klipper host | `sudo apt install curl` |
+| `gcode_shell_command.py` | Install via KIAUH *Advanced → Install gcode shell command*, or see below |
+
+**Install `gcode_shell_command.py` manually** (if not already present):
+
+```bash
+wget -O ~/klipper/klippy/extras/gcode_shell_command.py \
+  https://raw.githubusercontent.com/dw-0/kiauh/master/resources/gcode_shell_command.py
+sudo systemctl restart klipper
+```
+
+#### 1. moonraker.conf
+
+Copy the contents of `klipper/moonraker.conf` from this repository into your
+`moonraker.conf`, replacing `<ESP32_IP>` with the sensor's IP address:
+
+```ini
+[sensor esp32_filament_runout]
+type: http
+url: http://192.168.1.42/api/status   # ← your ESP32 IP
+timeout: 3.0
+poll_rate: 5.0
+
+parameter_sensor_enabled:
+    units: bool
+
+parameter_fault:
+    units: bool
+    history_field: filament_fault
+
+parameter_enc_vel:
+    units: mm/s
+    history_field: encoder_velocity
+
+parameter_ext_vel:
+    units: mm/s
+    history_field: extruder_velocity
+
+parameter_motion_ago_ms:
+    units: ms
+
+parameter_nozzle_temp:
+    units: °C
+    history_field: nozzle_temperature
+
+[shell_command filament_sensor_enable]
+command: curl -s -X POST http://192.168.1.42/api/sensor
+    -H "Content-Type: application/json"
+    -d '{"enabled":true,"persist":false}'
+timeout: 5.0
+verbose: False
+
+[shell_command filament_sensor_disable]
+command: curl -s -X POST http://192.168.1.42/api/sensor
+    -H "Content-Type: application/json"
+    -d '{"enabled":false,"persist":false}'
+timeout: 5.0
+verbose: False
+
+[shell_command filament_sensor_reset]
+command: curl -s -X POST http://192.168.1.42/api/reset
+timeout: 5.0
+verbose: False
+```
+
+#### 2. printer.cfg macros
+
+Copy the macros from `klipper/printer.cfg` in this repository (or add them
+manually):
+
+```ini
+[gcode_macro FILAMENT_SENSOR_ENABLE]
+description: Enable the ESP32 filament runout sensor
+gcode:
+    RUN_SHELL_COMMAND CMD=filament_sensor_enable
+    M118 ESP32 filament sensor: ENABLED
+
+[gcode_macro FILAMENT_SENSOR_DISABLE]
+description: Disable the ESP32 filament runout sensor
+gcode:
+    RUN_SHELL_COMMAND CMD=filament_sensor_disable
+    M118 ESP32 filament sensor: DISABLED
+
+[gcode_macro FILAMENT_SENSOR_RESET]
+description: Reset an active filament fault on the ESP32 sensor
+gcode:
+    RUN_SHELL_COMMAND CMD=filament_sensor_reset
+    M118 ESP32 filament sensor: fault RESET
+```
+
+Restart Klipper and Moonraker:
+
+```bash
+sudo systemctl restart klipper moonraker
+```
+
+#### 3. Using the macros
+
+The three macros are available as buttons in Mainsail and can be called from
+G-code:
+
+| Macro | When to use |
+|-------|-------------|
+| `FILAMENT_SENSOR_ENABLE` | In `PRINT_START` to arm the sensor |
+| `FILAMENT_SENSOR_DISABLE` | In `PRINT_END` or during filament changes |
+| `FILAMENT_SENSOR_RESET` | After clearing a runout, before `RESUME` |
+
+> **persist flag**: `persist: false` applies the enable/disable only in the
+> ESP32's RAM and is lost on reboot.  Change to `"persist":true` in
+> `moonraker.conf` if you want the state to survive power cycles.
 
 ---
 
