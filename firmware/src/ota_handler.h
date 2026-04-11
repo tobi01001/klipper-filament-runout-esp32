@@ -11,15 +11,20 @@
  *     Upload (or run `pio run -e esp32dev_ota -t upload`).  The device must be
  *     reachable on the local network and WiFi must be connected.
  *
- *  2. **GitHub Releases pull** – Two-step process via the web UI:
+ *  2. **GitHub Releases pull** – Three-step process via the web UI:
  *     a. Call ota_github_check_request() (or POST /api/ota/check) to fetch
- *        release info and compare against FIRMWARE_VERSION.  Status becomes
- *        "update-available" or "up-to-date".
+ *        the releases list and compare firmware and Web UI versions independently.
+ *        Status becomes "update-available" (firmware newer), "ui-update-available"
+ *        (UI newer, firmware current), or "up-to-date".
  *     b. When "update-available", the user confirms in the web UI and then
  *        calls ota_github_update_request() (or POST /api/ota/update) to
- *        download and flash the "firmware.bin" asset and, if present, update
- *        "index.html" on LittleFS.  The device reboots automatically after a
- *        successful firmware flash.
+ *        download and flash the "firmware.bin" asset from the latest fw-v* release.
+ *        The device reboots automatically after a successful firmware flash.
+ *        Note: the Web UI is NOT updated during firmware flash; it has its own path.
+ *     c. When "ui-update-available" (or independently), the user confirms and then
+ *        calls ota_github_update_ui_request() (or POST /api/ota/update-ui) to
+ *        download "index.html" from the latest ui-v* release to LittleFS.
+ *        No reboot is required; the updated UI is served on the next page load.
  *
  * MIT License – Copyright (c) 2026 tobi01001
  */
@@ -90,8 +95,8 @@ void ota_github_update_ui_request();
  * @brief Short status string for the last GitHub OTA operation.
  *
  * Returns one of: "disabled", "idle", "checking", "update-available",
- * "up-to-date", "updating", "updating-ui", "ok", "failed".  Thread-safe
- * (read of a volatile pointer to a string literal).
+ * "ui-update-available", "up-to-date", "updating", "updating-ui", "ok",
+ * "failed".  Thread-safe (read of a volatile pointer to a string literal).
  */
 const char *ota_get_status();
 
@@ -105,16 +110,34 @@ const char *ota_get_status();
  * Examples:
  *   "GitHub API HTTP -11: connection refused"
  *   "[HTTPUpdate] HTTP error: 302"
- *   "No firmware.bin asset in release v1.2.0"
+ *   "No firmware.bin asset in release fw-v1.2.0"
  */
 const char *ota_get_error();
 
 /**
- * @brief Latest release tag found during the most recent GitHub API check.
+ * @brief Latest firmware release tag (prefix "fw-v" or legacy "v") found
+ *        during the most recent GitHub releases list check.
  *
  * Returns "" until a successful API response has been received.
  */
-const char *ota_get_latest_tag();
+const char *ota_get_latest_fw_tag();
+
+/**
+ * @brief Latest Web UI release tag (prefix "ui-v") found during the most
+ *        recent GitHub releases list check.
+ *
+ * Returns "" when no ui-v* release has been found yet or no check has run.
+ */
+const char *ota_get_latest_ui_tag();
+
+/**
+ * @brief Returns true when the latest ui-v* release contains a Web UI version
+ *        newer than the ui-version embedded in /index.html on LittleFS.
+ *
+ * Set by the check task; cleared by the UI update task after a successful
+ * download.  Thread-safe (mutex-protected read).
+ */
+bool ota_get_ui_update_available();
 
 /**
  * @brief Version string read from the <meta name="ui-version"> tag in the
@@ -123,8 +146,7 @@ const char *ota_get_latest_tag();
  * Returns "unknown" when LittleFS is not mounted, the file does not exist,
  * or the version tag is absent (e.g. an old manually-uploaded index.html).
  *
- * The web handler uses this to populate the "UI version (LittleFS)" row in
- * the /api/ota JSON response, letting the user verify that the on-device web
- * UI matches the running firmware.
+ * Used by ota_get_ui_update_available() and the web handler to populate the
+ * "UI version" row in the /api/ota JSON response.
  */
 const char *ota_get_lfs_ui_version();

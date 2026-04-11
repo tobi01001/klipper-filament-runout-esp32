@@ -198,12 +198,15 @@
 #define OTA_PASSWORD     "ota1234"
 
 // GitHub repository for the automatic update check.
-// The OTA handler calls the GitHub Releases API, compares the latest tag_name
-// with FIRMWARE_VERSION, and – if newer – streams the "firmware.bin" asset
-// through HTTPUpdate to the inactive OTA partition.
+// The OTA handler calls the GitHub Releases list API, scans for the latest
+// firmware release (tag prefix "fw-v") and the latest Web UI release (tag
+// prefix "ui-v"), then checks each independently against the running versions.
 #define GITHUB_OWNER     "tobi01001"
 #define GITHUB_REPO      "klipper-filament-runout-esp32"
-#define GITHUB_API_URL   "https://api.github.com/repos/" GITHUB_OWNER "/" GITHUB_REPO "/releases/latest"
+// Returns up to 10 most-recent releases; enough to find the latest fw-v* and
+// ui-v* entries even when they are not the single most-recent release.
+#define GITHUB_RELEASES_URL \
+    "https://api.github.com/repos/" GITHUB_OWNER "/" GITHUB_REPO "/releases?per_page=10"
 #define ENABLE_GITHUB_OTA 1              // 0 removes HTTPS GitHub OTA path and mbedTLS dependency
 
 // Maximum time to wait for the GitHub API or asset download (ms).

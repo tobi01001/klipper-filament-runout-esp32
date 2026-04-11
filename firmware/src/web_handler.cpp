@@ -414,12 +414,15 @@ static void handle_sensor_post() {
 
 static void handle_ota_get() {
     JsonDocument doc;
-    doc["version"]        = FIRMWARE_VERSION;
-    doc["lfs_ui_version"] = ota_get_lfs_ui_version();
-    doc["latest_tag"]     = ota_get_latest_tag();
-    doc["status"]         = ota_get_status();
-    doc["error"]          = ota_get_error();
-  doc["github_ota"] = (bool)ENABLE_GITHUB_OTA;
+    doc["fw_version"]          = FIRMWARE_VERSION;
+    doc["ui_version"]          = ota_get_lfs_ui_version();
+    doc["latest_fw_tag"]       = ota_get_latest_fw_tag();
+    doc["latest_ui_tag"]       = ota_get_latest_ui_tag();
+    doc["fw_update_available"] = (strcmp(ota_get_status(), "update-available") == 0);
+    doc["ui_update_available"] = ota_get_ui_update_available();
+    doc["status"]              = ota_get_status();
+    doc["error"]               = ota_get_error();
+    doc["github_ota"]          = (bool)ENABLE_GITHUB_OTA;
 
     String out;
     serializeJson(doc, out);

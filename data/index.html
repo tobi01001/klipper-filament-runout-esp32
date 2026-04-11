@@ -283,10 +283,11 @@
       <div class="card">
         <h2>Firmware &amp; UI Update</h2>
         <table>
-          <tr><td>Installed version</td><td id="ota-ver">-</td></tr>
+          <tr><td>Firmware version</td>   <td id="ota-fw-ver">-</td></tr>
+          <tr><td>Latest firmware</td>    <td id="ota-fw-latest">-</td></tr>
           <tr><td>UI version (LittleFS)</td><td id="ota-ui-ver">-</td></tr>
-          <tr><td>Latest release</td>   <td id="ota-latest">-</td></tr>
-          <tr><td>Status</td>           <td id="ota-status">-</td></tr>
+          <tr><td>Latest UI</td>          <td id="ota-ui-latest">-</td></tr>
+          <tr><td>Status</td>             <td id="ota-status">-</td></tr>
         </table>
         <div id="ota-error" style="font-size:.8rem;color:#f66;margin-top:6px;word-break:break-word;display:none"></div>
         <button class="btn-save" id="btn-check" onclick="checkForUpdates()" style="margin-top:10px">
@@ -508,20 +509,25 @@
       fetch('/api/ota')
         .then(r=>r.json())
         .then(d=>{
-          document.getElementById('ota-ver').textContent    = d.version;
-          document.getElementById('ota-latest').textContent = d.latest_tag || '—';
-          document.getElementById('ota-status').textContent = d.status;
+          document.getElementById('ota-fw-ver').textContent    = d.fw_version || '—';
+          document.getElementById('ota-fw-latest').textContent = d.latest_fw_tag || '—';
+          document.getElementById('ota-status').textContent    = d.status;
 
-          // Show UI (LittleFS) version; warn when it differs from firmware version.
+          // UI version row – show update indicator when a newer UI release is available.
           const uiVerEl = document.getElementById('ota-ui-ver');
-          const lfsVer  = d.lfs_ui_version || '—';
-          if (d.lfs_ui_version && d.version && d.lfs_ui_version !== d.version) {
-            uiVerEl.textContent = lfsVer + ' ⚠ mismatch';
+          const uiVer   = d.ui_version || '—';
+          if (d.ui_update_available) {
+            uiVerEl.textContent = uiVer + ' ⬆ update available';
             uiVerEl.style.color = '#fa0';
           } else {
-            uiVerEl.textContent = lfsVer;
+            uiVerEl.textContent = uiVer;
             uiVerEl.style.color = '';
           }
+
+          // Latest UI release row.
+          const uiLatestEl = document.getElementById('ota-ui-latest');
+          uiLatestEl.textContent = d.latest_ui_tag || '—';
+          uiLatestEl.style.color = d.ui_update_available ? '#fa0' : '';
 
           // Show error detail when failed, hide otherwise.
           const errEl = document.getElementById('ota-error');
@@ -539,32 +545,30 @@
             document.getElementById('btn-update-ui').style.display = 'none';
             return;
           }
-          // Show "Apply Update" button only when a newer version is confirmed available.
+          // "Apply Firmware Update" button: visible when firmware update is available.
           document.getElementById('btn-apply').style.display =
-            d.status === 'update-available' ? 'block' : 'none';
-          // Show "Update UI" button whenever the LittleFS UI version doesn't match
-          // the running firmware version (version mismatch that requires UI refresh).
-          const hasUiMismatch = d.lfs_ui_version && d.version &&
-                                d.lfs_ui_version !== 'unknown' &&
-                                d.lfs_ui_version !== d.version;
+            d.fw_update_available ? 'block' : 'none';
+          // "Update UI" button: visible when a newer UI release exists.
           document.getElementById('btn-update-ui').style.display =
-            hasUiMismatch ? 'block' : 'none';
+            d.ui_update_available ? 'block' : 'none';
         }).catch(()=>{});
     }
 
     function checkForUpdates() {
       document.getElementById('ota-status').textContent = 'checking…';
       document.getElementById('btn-apply').style.display = 'none';
+      document.getElementById('btn-update-ui').style.display = 'none';
       fetch('/api/ota/check', {method:'POST'})
         .then(r=>r.json())
         .then(d=>{
           if (!d.ok) document.getElementById('ota-status').textContent = '✗ '+d.error;
+          else pollOtaStatus(); // start polling to pick up the check result
         })
         .catch(()=>{ document.getElementById('ota-status').textContent = '✗ Request failed'; });
     }
 
     function applyUpdate() {
-      const tag = document.getElementById('ota-latest').textContent;
+      const tag = document.getElementById('ota-fw-latest').textContent;
       if (!confirm(`Apply firmware update ${tag}?\nThe device will reboot after flashing.`)) return;
       otaIsUiOnly = false;
       document.getElementById('ota-status').textContent = 'starting update…';
@@ -637,6 +641,24 @@
               document.getElementById('ota-status').textContent = '✓ UI updated – reloading…';
               otaIsUiOnly = false;
               setTimeout(() => location.reload(), 2000);
+              return;
+            }
+            // After a check completes, refresh button visibility from the new state.
+            if (d.status === 'update-available' || d.status === 'ui-update-available' ||
+                d.status === 'up-to-date') {
+              document.getElementById('btn-apply').style.display =
+                d.fw_update_available ? 'block' : 'none';
+              document.getElementById('btn-update-ui').style.display =
+                d.ui_update_available ? 'block' : 'none';
+              // Update version cells with fresh data.
+              document.getElementById('ota-fw-ver').textContent    = d.fw_version || '—';
+              document.getElementById('ota-fw-latest').textContent = d.latest_fw_tag || '—';
+              const uiVerEl = document.getElementById('ota-ui-ver');
+              uiVerEl.textContent = (d.ui_version || '—') + (d.ui_update_available ? ' ⬆ update available' : '');
+              uiVerEl.style.color = d.ui_update_available ? '#fa0' : '';
+              const uiLatestEl = document.getElementById('ota-ui-latest');
+              uiLatestEl.textContent = d.latest_ui_tag || '—';
+              uiLatestEl.style.color = d.ui_update_available ? '#fa0' : '';
               return;
             }
             // Keep polling while the update is in progress.
