@@ -47,6 +47,7 @@
 #include <HTTPClient.h>
 #include <HTTPUpdate.h>
 #include <WiFiClientSecure.h>
+#include <WiFi.h>
 #include <LittleFS.h>
 #endif
 
@@ -54,11 +55,16 @@
 static volatile const char *s_status         = "idle";
 static char                 s_latest_tag[32] = "";
 static volatile bool        s_task_running   = false;
-// Mutex protecting s_latest_tag (written by OTA task, read by web handler task).
+// Mutex protecting s_latest_tag, s_asset_url, s_html_url, and s_error_msg
+// (written by OTA task, read by web handler task).
 static SemaphoreHandle_t    s_tag_mutex      = nullptr;
 // Last error detail string – populated on every failure, cleared on new attempt.
 // Exposed via ota_get_error() so the web UI can show more than "failed".
 static char                 s_error_msg[128] = "";
+// Asset download URLs cached by the check task so the update task can skip the
+// redundant GitHub API round-trip between "Check for Updates" and "Apply Update".
+static char                 s_asset_url[256] = "";
+static char                 s_html_url[256]  = "";
 
 // ─── Task mode ────────────────────────────────────────────────────────────────
 // When true the task only checks the latest release without flashing.
@@ -207,100 +213,163 @@ static bool version_is_newer(const char *tag) {
 static void github_update_task(void * /*param*/) {
     set_error_msg(""); // clear stale error from previous attempt
     s_status = "checking";
-    DBG_PRINTF("[OTA] Checking GitHub releases at %s\n", GITHUB_API_URL);
 
-    // ── Step 1: Fetch the latest release info ──────────────────────────────
-    WiFiClientSecure api_client;
-    api_client.setInsecure(); // skips certificate verification
-
-    HTTPClient http;
-    http.begin(api_client, GITHUB_API_URL);
-    http.setTimeout(OTA_HTTP_TIMEOUT_MS);
-    http.addHeader("User-Agent", "ESP32-FilamentSensor/" FIRMWARE_VERSION);
-    http.addHeader("Accept",     "application/vnd.github+json");
-
-    const int api_code = http.GET();
-    if (api_code != HTTP_CODE_OK) {
-        DBG_PRINTF("[OTA] GitHub API error: HTTP %d\n", api_code);
-        set_error_msg("GitHub API HTTP %d: %s", api_code,
-                      http.errorToString(api_code).c_str());
-        http.end();
+    // ── Step 0: Verify WiFi is up before attempting any HTTPS calls ────────────
+    if (WiFi.status() != WL_CONNECTED) {
+        DBG_PRINTLN("[OTA] WiFi not connected – aborting OTA");
+        set_error_msg("WiFi not connected");
         s_status = "failed";
         s_task_running = false;
         vTaskDelete(nullptr);
         return;
     }
 
-    // ── Step 2: Parse release JSON ─────────────────────────────────────────
-    // Use a filter to discard unneeded fields and keep heap usage low.
-    JsonDocument filter;
-    filter["tag_name"] = true;
-    filter["assets"][0]["name"] = true;
-    filter["assets"][0]["browser_download_url"] = true;
+    char asset_url[256] = "";
+    char html_url[256]  = "";
 
-    JsonDocument doc;
-    const DeserializationError json_err =
-        deserializeJson(doc, http.getStream(),
-                        DeserializationOption::Filter(filter));
-    http.end();
-
-    if (json_err) {
-        DBG_PRINTF("[OTA] JSON parse error: %s\n", json_err.c_str());
-        set_error_msg("JSON parse: %s", json_err.c_str());
-        s_status = "failed";
-        s_task_running = false;
-        vTaskDelete(nullptr);
-        return;
-    }
-
-    const char *tag = doc["tag_name"] | "";
-    if (s_tag_mutex && xSemaphoreTake(s_tag_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-        strncpy(s_latest_tag, tag, sizeof(s_latest_tag) - 1);
-        s_latest_tag[sizeof(s_latest_tag) - 1] = '\0';
+    // ── For update tasks: reuse asset URLs cached by the preceding check task ──
+    // This avoids a redundant HTTPS round-trip to api.github.com between the user
+    // clicking "Check for Updates" and then "Apply Update".  The check and update
+    // tasks are serialised by s_task_running, so the cached URLs are always from
+    // the most recent completed check.
+    bool have_cached = false;
+    if (!s_check_only && s_tag_mutex &&
+        xSemaphoreTake(s_tag_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        have_cached = (s_asset_url[0] != '\0');
+        if (have_cached) {
+            strncpy(asset_url, s_asset_url, sizeof(asset_url) - 1);
+            asset_url[sizeof(asset_url) - 1] = '\0';
+            strncpy(html_url,  s_html_url,  sizeof(html_url)  - 1);
+            html_url[sizeof(html_url) - 1] = '\0';
+            DBG_PRINTF("[OTA] Using cached asset URLs for %s\n", s_latest_tag);
+        }
         xSemaphoreGive(s_tag_mutex);
     }
 
-    DBG_PRINTF("[OTA] Latest release: %s  (current: %s)\n",
-                  tag, FIRMWARE_VERSION);
+    if (!have_cached) {
+        // ── Step 1: Fetch the latest release info ──────────────────────────────
+        DBG_PRINTF("[OTA] Checking GitHub releases at %s\n", GITHUB_API_URL);
+        WiFiClientSecure api_client;
+        api_client.setInsecure(); // skips certificate verification
 
-    // ── Step 3: Version check ──────────────────────────────────────────────
-    if (!version_is_newer(tag)) {
-        DBG_PRINTLN("[OTA] Firmware is up-to-date");
-        s_status = "up-to-date";
-        s_task_running = false;
-        vTaskDelete(nullptr);
-        return;
-    }
+        HTTPClient http;
+        http.begin(api_client, GITHUB_API_URL);
+        http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+        http.setTimeout(OTA_HTTP_TIMEOUT_MS);
+        http.addHeader("User-Agent", "ESP32-FilamentSensor/" FIRMWARE_VERSION);
+        http.addHeader("Accept",     "application/vnd.github+json");
+
+        const int api_code = http.GET();
+        if (api_code != HTTP_CODE_OK) {
+            DBG_PRINTF("[OTA] GitHub API error: HTTP %d\n", api_code);
+            set_error_msg("GitHub API HTTP %d: %s", api_code,
+                          http.errorToString(api_code).c_str());
+            http.end();
+            s_status = "failed";
+            s_task_running = false;
+            vTaskDelete(nullptr);
+            return;
+        }
+
+        // ── Step 2: Parse release JSON ─────────────────────────────────────────
+        // Use a filter to discard unneeded fields and keep heap usage low.
+        JsonDocument filter;
+        filter["tag_name"] = true;
+        filter["assets"][0]["name"] = true;
+        filter["assets"][0]["browser_download_url"] = true;
+
+        JsonDocument doc;
+        const DeserializationError json_err =
+            deserializeJson(doc, http.getStream(),
+                            DeserializationOption::Filter(filter));
+        http.end();
+
+        if (json_err) {
+            DBG_PRINTF("[OTA] JSON parse error: %s\n", json_err.c_str());
+            set_error_msg("JSON parse: %s", json_err.c_str());
+            s_status = "failed";
+            s_task_running = false;
+            vTaskDelete(nullptr);
+            return;
+        }
+
+        const char *tag = doc["tag_name"] | "";
+        if (s_tag_mutex && xSemaphoreTake(s_tag_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            strncpy(s_latest_tag, tag, sizeof(s_latest_tag) - 1);
+            s_latest_tag[sizeof(s_latest_tag) - 1] = '\0';
+            // Clear stale cached URLs; repopulate below once asset URLs are known.
+            s_asset_url[0] = '\0';
+            s_html_url[0]  = '\0';
+            xSemaphoreGive(s_tag_mutex);
+        }
+
+        DBG_PRINTF("[OTA] Latest release: %s  (current: %s)\n",
+                      tag, FIRMWARE_VERSION);
+
+        // ── Step 3: Version check ──────────────────────────────────────────────
+        if (!version_is_newer(tag)) {
+            DBG_PRINTLN("[OTA] Firmware is up-to-date");
+            // Cache the index.html URL even when firmware is current so that a
+            // subsequent UI-only update task can skip the API round-trip.
+            const JsonArray utd_assets = doc["assets"].as<JsonArray>();
+            for (const JsonObject asset : utd_assets) {
+                const char *name = asset["name"] | "";
+                const char *url  = asset["browser_download_url"] | "";
+                if (strcmp(name, "index.html") == 0) {
+                    if (s_tag_mutex &&
+                        xSemaphoreTake(s_tag_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+                        strncpy(s_html_url, url, sizeof(s_html_url) - 1);
+                        s_html_url[sizeof(s_html_url) - 1] = '\0';
+                        xSemaphoreGive(s_tag_mutex);
+                    }
+                    break;
+                }
+            }
+            s_status = "up-to-date";
+            s_task_running = false;
+            vTaskDelete(nullptr);
+            return;
+        }
+
+        // ── Step 4: Find the firmware.bin and index.html asset URLs ───────────
+        const JsonArray assets = doc["assets"].as<JsonArray>();
+        for (const JsonObject asset : assets) {
+            const char *name = asset["name"] | "";
+            const char *url  = asset["browser_download_url"] | "";
+            if (strcmp(name, "firmware.bin") == 0) {
+                strncpy(asset_url, url, sizeof(asset_url) - 1);
+                asset_url[sizeof(asset_url) - 1] = '\0';
+            } else if (strcmp(name, "index.html") == 0) {
+                strncpy(html_url, url, sizeof(html_url) - 1);
+                html_url[sizeof(html_url) - 1] = '\0';
+            }
+        }
+
+        // Cache URLs so a subsequent update task can skip this API call.
+        if (asset_url[0] != '\0' &&
+            s_tag_mutex && xSemaphoreTake(s_tag_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            strncpy(s_asset_url, asset_url, sizeof(s_asset_url) - 1);
+            s_asset_url[sizeof(s_asset_url) - 1] = '\0';
+            strncpy(s_html_url,  html_url,  sizeof(s_html_url)  - 1);
+            s_html_url[sizeof(s_html_url) - 1] = '\0';
+            xSemaphoreGive(s_tag_mutex);
+        }
+    } // end !have_cached
 
     // If this is a check-only request, report that an update is available
     // and let the user confirm before flashing.
     if (s_check_only) {
-        DBG_PRINTF("[OTA] Update available: %s -> confirm via web UI to apply\n", tag);
+        DBG_PRINTF("[OTA] Update available: %s -> confirm via web UI to apply\n",
+                   s_latest_tag);
         s_status = "update-available";
         s_task_running = false;
         vTaskDelete(nullptr);
         return;
     }
 
-    // ── Step 4: Find the firmware.bin and index.html asset URLs ───────────────
-    char asset_url[256] = "";
-    char html_url[256]  = "";
-    const JsonArray assets = doc["assets"].as<JsonArray>();
-    for (const JsonObject asset : assets) {
-        const char *name = asset["name"] | "";
-        const char *url  = asset["browser_download_url"] | "";
-        if (strcmp(name, "firmware.bin") == 0) {
-            strncpy(asset_url, url, sizeof(asset_url) - 1);
-            asset_url[sizeof(asset_url) - 1] = '\0';
-        } else if (strcmp(name, "index.html") == 0) {
-            strncpy(html_url, url, sizeof(html_url) - 1);
-            html_url[sizeof(html_url) - 1] = '\0';
-        }
-    }
-
     if (asset_url[0] == '\0') {
         DBG_PRINTLN("[OTA] No firmware.bin asset found in release");
-        set_error_msg("No firmware.bin asset in release %s", tag);
+        set_error_msg("No firmware.bin asset in release %s", s_latest_tag);
         s_status = "failed";
         s_task_running = false;
         vTaskDelete(nullptr);
@@ -385,6 +454,134 @@ static void github_update_task(void * /*param*/) {
         }
     }
 
+    s_task_running = false;
+    vTaskDelete(nullptr);
+}
+
+// ─── GitHub UI-only update background task ────────────────────────────────────
+/**
+ * Downloads the "index.html" asset from the latest GitHub release and writes
+ * it to /index.html on LittleFS.  No firmware flashing or reboot is performed.
+ * Reuses the cached html URL from a preceding check task when available.
+ */
+static void github_update_ui_task(void * /*param*/) {
+    set_error_msg("");
+    s_status = "updating-ui";
+    DBG_PRINTLN("[OTA] UI-only update requested");
+
+    if (WiFi.status() != WL_CONNECTED) {
+        DBG_PRINTLN("[OTA] WiFi not connected – aborting UI update");
+        set_error_msg("WiFi not connected");
+        s_status = "failed";
+        s_task_running = false;
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    char html_url[256] = "";
+
+    // Reuse URL cached by a preceding check task (avoids an extra API call).
+    bool have_cached = false;
+    if (s_tag_mutex && xSemaphoreTake(s_tag_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        have_cached = (s_html_url[0] != '\0');
+        if (have_cached) {
+            strncpy(html_url, s_html_url, sizeof(html_url) - 1);
+            html_url[sizeof(html_url) - 1] = '\0';
+            DBG_PRINTF("[OTA] Using cached UI URL for %s\n", s_latest_tag);
+        }
+        xSemaphoreGive(s_tag_mutex);
+    } else {
+        DBG_PRINTLN("[OTA] UI update: mutex timeout reading URL cache – will fetch API");
+    }
+
+    if (!have_cached) {
+        DBG_PRINTF("[OTA] Fetching GitHub release info at %s\n", GITHUB_API_URL);
+        WiFiClientSecure api_client;
+        api_client.setInsecure();
+
+        HTTPClient http;
+        http.begin(api_client, GITHUB_API_URL);
+        http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+        http.setTimeout(OTA_HTTP_TIMEOUT_MS);
+        http.addHeader("User-Agent", "ESP32-FilamentSensor/" FIRMWARE_VERSION);
+        http.addHeader("Accept",     "application/vnd.github+json");
+
+        const int api_code = http.GET();
+        if (api_code != HTTP_CODE_OK) {
+            DBG_PRINTF("[OTA] GitHub API error: HTTP %d\n", api_code);
+            set_error_msg("GitHub API HTTP %d: %s", api_code,
+                          http.errorToString(api_code).c_str());
+            http.end();
+            s_status = "failed";
+            s_task_running = false;
+            vTaskDelete(nullptr);
+            return;
+        }
+
+        JsonDocument filter;
+        filter["tag_name"] = true;
+        filter["assets"][0]["name"] = true;
+        filter["assets"][0]["browser_download_url"] = true;
+
+        JsonDocument doc;
+        const DeserializationError json_err =
+            deserializeJson(doc, http.getStream(),
+                            DeserializationOption::Filter(filter));
+        http.end();
+
+        if (json_err) {
+            DBG_PRINTF("[OTA] JSON parse error: %s\n", json_err.c_str());
+            set_error_msg("JSON parse: %s", json_err.c_str());
+            s_status = "failed";
+            s_task_running = false;
+            vTaskDelete(nullptr);
+            return;
+        }
+
+        const char *tag = doc["tag_name"] | "";
+        const JsonArray assets = doc["assets"].as<JsonArray>();
+        for (const JsonObject asset : assets) {
+            const char *name = asset["name"] | "";
+            const char *url  = asset["browser_download_url"] | "";
+            if (strcmp(name, "index.html") == 0) {
+                strncpy(html_url, url, sizeof(html_url) - 1);
+                html_url[sizeof(html_url) - 1] = '\0';
+                break;
+            }
+        }
+
+        // Cache for future operations.
+        if (s_tag_mutex && xSemaphoreTake(s_tag_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            strncpy(s_latest_tag, tag, sizeof(s_latest_tag) - 1);
+            s_latest_tag[sizeof(s_latest_tag) - 1] = '\0';
+            strncpy(s_html_url, html_url, sizeof(s_html_url) - 1);
+            s_html_url[sizeof(s_html_url) - 1] = '\0';
+            xSemaphoreGive(s_tag_mutex);
+        } else {
+            DBG_PRINTLN("[OTA] UI update: mutex timeout writing URL cache");
+        }
+    }
+
+    if (html_url[0] == '\0') {
+        DBG_PRINTLN("[OTA] No index.html asset found in release");
+        set_error_msg("No index.html asset in release");
+        s_status = "failed";
+        s_task_running = false;
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    DBG_PRINTF("[OTA] Downloading UI to LittleFS: %s\n", html_url);
+    if (!download_to_lfs(html_url, "/index.html")) {
+        // set_error_msg already set by download_to_lfs.
+        s_status = "failed";
+        s_task_running = false;
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    DBG_PRINTLN("[OTA] UI updated on LittleFS – no reboot required");
+    s_status = "ok";
     s_task_running = false;
     vTaskDelete(nullptr);
 }
@@ -504,6 +701,35 @@ void ota_github_update_request() {
 
     if (ok != pdPASS) {
         DBG_PRINTLN("[OTA] Failed to create update task");
+        s_task_running = false;
+        s_status = "failed";
+    }
+#else
+    s_status = "disabled";
+#endif
+}
+
+void ota_github_update_ui_request() {
+#if ENABLE_GITHUB_OTA
+    if (s_task_running) {
+        DBG_PRINTLN("[OTA] Task already running – UI update request ignored");
+        return;
+    }
+    s_task_running = true;
+
+    // 20480 bytes: TLS handshake + JSON parse + LittleFS write call chain.
+    const BaseType_t ok = xTaskCreatePinnedToCore(
+        github_update_ui_task,
+        "OTA_UI",
+        20480,
+        nullptr,
+        2,
+        nullptr,
+        0   // Core 0
+    );
+
+    if (ok != pdPASS) {
+        DBG_PRINTLN("[OTA] Failed to create UI update task");
         s_task_running = false;
         s_status = "failed";
     }

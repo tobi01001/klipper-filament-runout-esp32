@@ -442,6 +442,15 @@ static void handle_ota_update() {
 #endif
 }
 
+static void handle_ota_update_ui() {
+#if ENABLE_GITHUB_OTA
+    ota_github_update_ui_request();
+    s_server.send(200, "application/json", "{\"ok\":true}");
+#else
+    s_server.send(200, "application/json", "{\"ok\":false,\"error\":\"github ota disabled\"}");
+#endif
+}
+
 static void handle_diag() {
   MoonrakerDiag mr{};
   moonraker_get_diag(&mr);
@@ -564,9 +573,10 @@ void web_init(SemaphoreHandle_t status_mutex,
     s_server.on("/api/reboot",     HTTP_POST, handle_reboot);
     s_server.on("/api/calibrate",  HTTP_GET,  handle_calibrate_get);
     s_server.on("/api/calibrate",  HTTP_POST, handle_calibrate_post);
-    s_server.on("/api/ota",        HTTP_GET,  handle_ota_get);
-    s_server.on("/api/ota/check",  HTTP_POST, handle_ota_check);
-    s_server.on("/api/ota/update", HTTP_POST, handle_ota_update);
+    s_server.on("/api/ota",           HTTP_GET,  handle_ota_get);
+    s_server.on("/api/ota/check",     HTTP_POST, handle_ota_check);
+    s_server.on("/api/ota/update",    HTTP_POST, handle_ota_update);
+    s_server.on("/api/ota/update-ui", HTTP_POST, handle_ota_update_ui);
     s_server.on("/api/diag",       HTTP_GET,  handle_diag);
 #ifdef ENABLE_DHT
     s_server.on("/api/dht",        HTTP_GET,  handle_dht);

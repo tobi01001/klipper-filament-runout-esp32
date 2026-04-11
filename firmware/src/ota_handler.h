@@ -72,11 +72,26 @@ void ota_github_check_request();
 void ota_github_update_request();
 
 /**
+ * @brief Download the latest index.html from GitHub Releases and write it to
+ *        LittleFS without flashing firmware or rebooting.
+ *
+ * Non-blocking: schedules a FreeRTOS task that fetches the latest release
+ * info (or reuses a cached URL from a preceding check), downloads the
+ * "index.html" asset, and atomically replaces /index.html on LittleFS.
+ * The updated UI is served immediately on the next page load.
+ *
+ * Use this to resolve a UI version mismatch without performing a full
+ * firmware update.  Repeated calls while a task is already running are
+ * ignored.
+ */
+void ota_github_update_ui_request();
+
+/**
  * @brief Short status string for the last GitHub OTA operation.
  *
  * Returns one of: "disabled", "idle", "checking", "update-available",
- * "up-to-date", "updating", "ok", "failed".  Thread-safe (read of a
- * volatile pointer to a string literal).
+ * "up-to-date", "updating", "updating-ui", "ok", "failed".  Thread-safe
+ * (read of a volatile pointer to a string literal).
  */
 const char *ota_get_status();
 
