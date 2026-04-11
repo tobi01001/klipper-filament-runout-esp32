@@ -3,6 +3,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include "types.h"
+#include "pin_config.h"
 
 /**
  * @brief Initialise the HTTP web server (port 80).
@@ -14,11 +15,13 @@
  * @param config_mutex  Mutex protecting g_config.
  * @param status        Pointer to live SensorStatus.
  * @param config        Pointer to live SensorConfig.
+ * @param pins          Pointer to live PinConfig (used by /api/pins GET+POST).
  */
 void web_init(SemaphoreHandle_t status_mutex,
               SemaphoreHandle_t config_mutex,
               SensorStatus     *status,
-              SensorConfig     *config);
+              SensorConfig     *config,
+              PinConfig        *pins);
 
 /**
  * @brief Process pending HTTP client connections (non-blocking).

@@ -167,6 +167,46 @@
     <div id="cal-status" style="font-size:.85rem;margin-top:8px;min-height:1.4em;color:#aaa"></div>
   </div>
 
+  <!-- Pin Configuration Card -->
+  <div class="card">
+    <h2>Pin Configuration</h2>
+    <p style="font-size:.8rem;color:#aaa;margin-bottom:8px">
+      Change GPIO pin assignments. New assignments are stored in NVS and take
+      effect after the device reboots automatically.<br>
+      <strong style="color:#fa0">&#9888; GPIO 34–39 are input-only; do not assign the runout pin there.
+      GPIO 6–11 are reserved for SPI flash.</strong>
+    </p>
+    <div class="row">
+      <div>
+        <label>Encoder Ch-A pin</label>
+        <input type="number" id="pin-enc-a" step="1" min="0" max="39"/>
+      </div>
+      <div>
+        <label>Encoder Ch-B pin</label>
+        <input type="number" id="pin-enc-b" step="1" min="0" max="39"/>
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>Encoder button pin</label>
+        <input type="number" id="pin-enc-btn" step="1" min="0" max="39"/>
+      </div>
+      <div>
+        <label>Runout output pin</label>
+        <input type="number" id="pin-runout" step="1" min="0" max="33"/>
+      </div>
+    </div>
+    <div class="row" id="pin-dht-row">
+      <div>
+        <label>DHT22 data pin</label>
+        <input type="number" id="pin-dht" step="1" min="0" max="39"/>
+      </div>
+      <div></div>
+    </div>
+    <button class="btn-save" onclick="savePins()">Save &amp; Reboot</button>
+    <div id="pin-msg" style="font-size:.8rem;text-align:center;margin-top:6px;min-height:1.2em;color:#0f0"></div>
+  </div>
+
   <!-- OTA Update Card -->
   <div class="card">
     <h2>Firmware Update</h2>
@@ -579,8 +619,61 @@
         }).catch(()=>{});
     }
 
+    // ─── Pin Configuration ─────────────────────────────────────────────────────
+    function loadPins() {
+      fetch('/api/pins')
+        .then(r=>r.json())
+        .then(d=>{
+          document.getElementById('pin-enc-a').value   = d.enc_a_pin;
+          document.getElementById('pin-enc-b').value   = d.enc_b_pin;
+          document.getElementById('pin-enc-btn').value = d.enc_btn_pin;
+          document.getElementById('pin-runout').value  = d.runout_pin;
+          if (d.dht_pin !== undefined) {
+            document.getElementById('pin-dht').value   = d.dht_pin;
+          } else {
+            const row = document.getElementById('pin-dht-row');
+            if (row) row.style.display = 'none';
+          }
+        }).catch(()=>{});
+    }
+
+    function savePins() {
+      const body = {
+        enc_a_pin:   parseInt(document.getElementById('pin-enc-a').value,   10),
+        enc_b_pin:   parseInt(document.getElementById('pin-enc-b').value,   10),
+        enc_btn_pin: parseInt(document.getElementById('pin-enc-btn').value, 10),
+        runout_pin:  parseInt(document.getElementById('pin-runout').value,  10)
+      };
+      const dhtEl = document.getElementById('pin-dht');
+      if (dhtEl && dhtEl.value !== '') body.dht_pin = parseInt(dhtEl.value, 10);
+
+      const msgEl = document.getElementById('pin-msg');
+      msgEl.textContent = 'Saving…';
+      msgEl.style.color = '#aaa';
+      fetch('/api/pins', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)
+      })
+        .then(r=>r.json())
+        .then(d=>{
+          if (d.ok) {
+            msgEl.textContent = '✓ Saved – device rebooting…';
+            msgEl.style.color = '#4f4';
+          } else {
+            msgEl.textContent = '✗ ' + (d.error || 'Error');
+            msgEl.style.color = '#f44';
+          }
+        })
+        .catch(()=>{
+          msgEl.textContent = '✗ Request failed';
+          msgEl.style.color = '#f44';
+        });
+    }
+
     loadConfig();
     loadOta();
+    loadPins();
     refresh();
     refreshDiag();
     setInterval(refresh, 1000);

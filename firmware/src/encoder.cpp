@@ -14,6 +14,11 @@ static volatile uint32_t s_valid_edges = 0;
 static volatile uint32_t s_invalid_transitions = 0;
 static volatile int8_t   s_step_accum = 0;
 
+// ─── Runtime pin assignments (set once in encoder_init before ISR attach) ─────
+static uint8_t s_pin_cha = PIN_ENCODER_CHA;
+static uint8_t s_pin_chb = PIN_ENCODER_CHB;
+static uint8_t s_pin_btn = PIN_ENCODER_BTN;
+
 static QueueHandle_t     s_queue = nullptr;
 static const SensorConfig *s_cfg = nullptr;
 
@@ -60,8 +65,8 @@ static void IRAM_ATTR encoder_isr() {
     s_last_isr_us = now_us;
 
     // Read both channels atomically (both reads < 100 ns, encoder << 1 MHz)
-    const uint8_t chA  = static_cast<uint8_t>(digitalRead(PIN_ENCODER_CHA));
-    const uint8_t chB  = static_cast<uint8_t>(digitalRead(PIN_ENCODER_CHB));
+    const uint8_t chA  = static_cast<uint8_t>(digitalRead(s_pin_cha));
+    const uint8_t chB  = static_cast<uint8_t>(digitalRead(s_pin_chb));
     const uint8_t curr = (chB << 1) | chA;
 
     int8_t delta = 0;
@@ -108,29 +113,36 @@ static void IRAM_ATTR encoder_isr() {
 #endif
 
 // ─── Public API ──────────────────────────────────────────────────────────────
-void encoder_init(QueueHandle_t queue, const SensorConfig *cfg) {
+void encoder_init(QueueHandle_t queue, const SensorConfig *cfg, const PinConfig *pins) {
     s_queue = queue;
     s_cfg   = cfg;
 
-    pinMode(PIN_ENCODER_CHA, INPUT_PULLUP);
-    pinMode(PIN_ENCODER_CHB, INPUT_PULLUP);
-    pinMode(PIN_ENCODER_BTN, INPUT_PULLUP);
+    // Apply runtime pin assignments (fall back to compile-time defaults).
+    if (pins != nullptr) {
+        s_pin_cha = pins->enc_a_pin;
+        s_pin_chb = pins->enc_b_pin;
+        s_pin_btn = pins->enc_btn_pin;
+    }
+
+    pinMode(s_pin_cha, INPUT_PULLUP);
+    pinMode(s_pin_chb, INPUT_PULLUP);
+    pinMode(s_pin_btn, INPUT_PULLUP);
 
 #if ENCODER_USE_PULSE_SERVICE
-    attachInterrupt(digitalPinToInterrupt(PIN_ENCODER_CHA), encoder_isr, RISING);
+    attachInterrupt(digitalPinToInterrupt(s_pin_cha), encoder_isr, RISING);
     DBG_PRINTF("[ENC] Pulse service initialised (ChA=%d RISING, Btn=%d)\n",
-               PIN_ENCODER_CHA, PIN_ENCODER_BTN);
+               s_pin_cha, s_pin_btn);
 #else
     // Capture initial state so first ISR transition is interpreted correctly
-    const uint8_t chA  = static_cast<uint8_t>(digitalRead(PIN_ENCODER_CHA));
-    const uint8_t chB  = static_cast<uint8_t>(digitalRead(PIN_ENCODER_CHB));
+    const uint8_t chA  = static_cast<uint8_t>(digitalRead(s_pin_cha));
+    const uint8_t chB  = static_cast<uint8_t>(digitalRead(s_pin_chb));
     s_prev_state = (chB << 1) | chA;
 
-    attachInterrupt(digitalPinToInterrupt(PIN_ENCODER_CHA), encoder_isr, CHANGE);
-    attachInterrupt(digitalPinToInterrupt(PIN_ENCODER_CHB), encoder_isr, CHANGE);
+    attachInterrupt(digitalPinToInterrupt(s_pin_cha), encoder_isr, CHANGE);
+    attachInterrupt(digitalPinToInterrupt(s_pin_chb), encoder_isr, CHANGE);
 
     DBG_PRINTF("[ENC] Quadrature service initialised (ChA=%d, ChB=%d, Btn=%d)\n",
-               PIN_ENCODER_CHA, PIN_ENCODER_CHB, PIN_ENCODER_BTN);
+               s_pin_cha, s_pin_chb, s_pin_btn);
 #endif
 }
 
@@ -199,7 +211,7 @@ void encoder_task(void * /*param*/) {
 
         // Button debounce: shift in current reading; stable only when all 8 bits agree
         btn_history = static_cast<uint8_t>((btn_history << 1) |
-                      (digitalRead(PIN_ENCODER_BTN) == LOW ? 1 : 0));
+                      (digitalRead(s_pin_btn) == LOW ? 1 : 0));
         if (btn_history == 0xFF) {
             btn_state = true;   // 8 consecutive LOW readings → pressed
         } else if (btn_history == 0x00) {

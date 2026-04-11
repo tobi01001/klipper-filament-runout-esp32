@@ -10,7 +10,7 @@
 #include "debug_log.h"
 
 // ─── Module state ─────────────────────────────────────────────────────────────
-static DHT              s_dht(DHT_PIN, DHT22);
+static DHT             *s_dht          = nullptr;
 
 static SemaphoreHandle_t s_status_mutex = nullptr;
 static SemaphoreHandle_t s_config_mutex = nullptr;
@@ -25,20 +25,24 @@ static bool              s_initialized  = false;
 void dht_sensor_init(SemaphoreHandle_t status_mutex,
                      SemaphoreHandle_t config_mutex,
                      SensorStatus     *status,
-                     SensorConfig     *config) {
+                     SensorConfig     *config,
+                     uint8_t           dht_pin) {
     s_status_mutex = status_mutex;
     s_config_mutex = config_mutex;
     s_status       = status;
     s_config       = config;
 
-    s_dht.begin();
+    // Allocate DHT object with the runtime-configured pin.
+    // This single allocation lives for the process lifetime (never freed).
+    s_dht = new DHT(dht_pin, DHT22);
+    s_dht->begin();
     s_initialized = true;
 
-    DBG_PRINTLN("[DHT] DHT22 initialised on GPIO " + String(DHT_PIN));
+    DBG_PRINTLN("[DHT] DHT22 initialised on GPIO " + String(dht_pin));
 }
 
 void dht_sensor_tick() {
-    if (!s_initialized || !s_status || !s_config) {
+    if (!s_initialized || !s_status || !s_config || !s_dht) {
         return;
     }
 
@@ -62,8 +66,8 @@ void dht_sensor_tick() {
     // Read sensor – these calls block for ~20 ms while the DHT22 sends its
     // 40-bit response.  This is acceptable on Core 0 given the 3-second
     // interval; the 10 ms loop tick will simply be late for that one cycle.
-    const float temp = s_dht.readTemperature();  // °C
-    const float hum  = s_dht.readHumidity();     // %RH
+    const float temp = s_dht->readTemperature();  // °C
+    const float hum  = s_dht->readHumidity();     // %RH
     const bool  valid = !isnan(temp) && !isnan(hum);
 
     if (xSemaphoreTake(s_status_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
@@ -78,7 +82,7 @@ void dht_sensor_tick() {
     if (valid) {
         DBG_PRINTF("[DHT] T=%.1f°C H=%.1f%%\n", temp, hum);
     } else {
-        DBG_PRINTLN("[DHT] Read failed – check wiring on GPIO " + String(DHT_PIN));
+        DBG_PRINTLN("[DHT] Read failed – check wiring");
     }
 }
 
