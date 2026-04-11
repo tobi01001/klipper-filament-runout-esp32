@@ -1,0 +1,100 @@
+# ─── Automatic Web UI Release ─────────────────────────────────────────────────
+# Triggers when the web UI (data/**) changes are merged into main.
+# Firmware source changes (firmware/**) do NOT trigger this workflow.
+#
+# What it does:
+#   1. Reads the current UI_VERSION const from data/index.html
+#   2. Bumps the patch digit  (e.g. 1.1.5 → 1.1.6)
+#   3. Updates the <meta name="ui-version"> tag and the UI_VERSION JS const
+#   4. Commits and pushes the version bump (tagged [skip ci] to break the loop)
+#   5. Creates a GitHub Release tagged ui-v<new-version> with index.html
+#
+# The "ui-v" tag prefix distinguishes Web UI releases from firmware releases
+# ("fw-v" prefix).  The on-device OTA checker queries the releases list and
+# compares firmware and UI versions independently.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Release Web UI
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'data/**'
+
+jobs:
+  release-ui:
+    runs-on: ubuntu-latest
+
+    # Skip the version-bump commit that this workflow itself pushes.
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+
+    permissions:
+      contents: write  # needed to push the version bump and create the release
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── 2. Read and bump the UI version ──────────────────────────────────────
+      - name: Compute new UI version
+        id: version
+        run: |
+          CURRENT=$(grep -oP 'const UI_VERSION = "\K[^"]+' data/index.html)
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          NEW_PATCH=$(( PATCH + 1 ))
+          NEW="${MAJOR}.${MINOR}.${NEW_PATCH}"
+          echo "new=$NEW" >> "$GITHUB_OUTPUT"
+          echo "tag=ui-v${NEW}" >> "$GITHUB_OUTPUT"
+          echo "Bumping UI $CURRENT → $NEW"
+
+      - name: Apply UI version bump in data/index.html
+        run: |
+          NEW="${{ steps.version.outputs.new }}"
+          # Bump the <meta name="ui-version" content="x.y.z"> tag
+          sed -i 's/name="ui-version" content="[^"]*"/name="ui-version" content="'"$NEW"'"/' \
+            data/index.html
+          # Bump the JS const UI_VERSION = "x.y.z"
+          sed -i 's/const UI_VERSION = "[^"]*"/const UI_VERSION = "'"$NEW"'"/' \
+            data/index.html
+          grep -E 'ui-version|UI_VERSION' data/index.html | head -4
+
+      # ── 3. Commit the UI version bump ─────────────────────────────────────────
+      - name: Commit and push UI version bump
+        id: version_commit
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/index.html
+          git commit -m "chore: bump UI version to ${{ steps.version.outputs.new }} [skip ci]"
+          git push
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # ── 4. Create GitHub Release with index.html ──────────────────────────────
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "Web UI ${{ steps.version.outputs.tag }}"
+          body: |
+            ## Web UI ${{ steps.version.outputs.tag }}
+
+            Web UI (`index.html`) update from [${{ steps.version_commit.outputs.sha }}](${{ github.server_url }}/${{ github.repository }}/commit/${{ steps.version_commit.outputs.sha }}).
+
+            ### Updating via web UI (no reboot required)
+
+            Open `http://<sensor-ip>`, go to **Calib & Update**, click **Check for Updates**,
+            then confirm with **Update UI**.  The new interface is active immediately on the
+            next page load — no firmware flash or device reboot needed.
+
+            > **Note:** Firmware versions are released independently under `fw-v*` tags.
+            > A UI update never requires a firmware update, and vice versa.
+          files: |
+            data/index.html
+          token: ${{ secrets.GITHUB_TOKEN }}

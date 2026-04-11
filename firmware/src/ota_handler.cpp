@@ -14,14 +14,31 @@
  *
  *  Path 2 – GitHub Releases pull
  *  ──────────────────────────────────────────────────
- *  Triggered via the web UI or POST /api/ota/update.
- *  Steps performed by the background task:
- *    1. HTTPS GET to the GitHub Releases API for the latest release.
- *    2. Parse tag_name and find the "firmware.bin" and "index.html" asset URLs.
- *    3. Compare tag against FIRMWARE_VERSION (simple x.y.z integers).
- *    4. If newer, download "index.html" and write it to LittleFS (if asset present).
- *    5. Stream "firmware.bin" via httpUpdate to the inactive partition.
+ *  Triggered via the web UI or POST /api/ota/check, /api/ota/update,
+ *  /api/ota/update-ui.
+ *
+ *  Firmware and Web UI are versioned independently:
+ *    • Firmware releases carry the tag prefix "fw-v"  (e.g. fw-v1.1.6).
+ *    • Web UI releases carry the tag prefix "ui-v"    (e.g. ui-v1.1.6).
+ *    • Old-style "v*" tags are treated as firmware for backward compatibility.
+ *
+ *  Steps performed by the check task:
+ *    1. HTTPS GET to the GitHub Releases list API (up to 10 recent releases).
+ *    2. Scan the list for the latest fw-v* tag (firmware) and latest ui-v* tag
+ *       (Web UI), extracting asset download URLs for each.
+ *    3. Compare fw tag against FIRMWARE_VERSION; compare ui tag against the
+ *       ui-version embedded in /index.html on LittleFS – independently.
+ *    4. Report status: "update-available" (firmware newer), "ui-update-available"
+ *       (UI newer, firmware current), or "up-to-date".
+ *
+ *  Steps performed by the update task (firmware flash):
+ *    5. Stream "firmware.bin" from the latest fw release via httpUpdate.
  *    6. Reboot on success; set status "failed" on error.
+ *    (Web UI is NOT updated during a firmware flash – UI has its own update path.)
+ *
+ *  Steps performed by the UI-only update task:
+ *    7. Download "index.html" from the latest ui-v* release and write to LittleFS.
+ *    8. Serve the new UI immediately without a reboot.
  *
  * Note: HTTPS connections use setInsecure() (no certificate validation).
  *       This is acceptable for a local-network embedded device but should be
@@ -53,14 +70,18 @@
 
 // ─── Module state ──────────────────────────────────────────────────────────────
 static volatile const char *s_status         = "idle";
-static char                 s_latest_tag[32] = "";
+static char                 s_latest_fw_tag[32] = ""; // latest firmware release (fw-v* or v*)
+static char                 s_latest_ui_tag[32] = ""; // latest Web UI release   (ui-v*)
 static volatile bool        s_task_running   = false;
-// Mutex protecting s_latest_tag, s_asset_url, s_html_url, and s_error_msg
+// Mutex protecting s_latest_fw_tag, s_latest_ui_tag, s_asset_url, s_html_url,
+// s_ui_update_available, and s_error_msg
 // (written by OTA task, read by web handler task).
 static SemaphoreHandle_t    s_tag_mutex      = nullptr;
 // Last error detail string – populated on every failure, cleared on new attempt.
 // Exposed via ota_get_error() so the web UI can show more than "failed".
 static char                 s_error_msg[128] = "";
+// Whether the Web UI in the latest ui-v* release is newer than LittleFS.
+static volatile bool        s_ui_update_available = false;
 // Asset download URLs cached by the check task so the update task can skip the
 // redundant GitHub API round-trip between "Check for Updates" and "Apply Update".
 static char                 s_asset_url[256] = "";
@@ -189,17 +210,71 @@ static bool download_to_lfs(const char *url, const char *lfs_path) {
     return true;
 }
 /**
- * @brief Return true when @p tag represents a version newer than FIRMWARE_VERSION.
+ * @brief Return true when @p tag represents a firmware version newer than
+ *        FIRMWARE_VERSION.
  *
- * Both strings must be "x.y.z" (an optional leading 'v' in @p tag is stripped).
+ * Accepts "fw-v1.2.3" (new-style firmware tag), "v1.2.3" (old-style), or
+ * plain "1.2.3".  The leading prefix is stripped before comparison.
  */
 static bool version_is_newer(const char *tag) {
-    const char *v = (tag && tag[0] == 'v') ? tag + 1 : tag;
+    const char *v = tag;
+    if (strncmp(v, "fw-v", 4) == 0) v += 4;
+    else if (v[0] == 'v')            v += 1;
 
     int cur_major = 0, cur_minor = 0, cur_patch = 0;
     int new_major = 0, new_minor = 0, new_patch = 0;
 
     if (sscanf(FIRMWARE_VERSION, "%d.%d.%d", &cur_major, &cur_minor, &cur_patch) != 3)
+        return false;
+    if (!v || sscanf(v, "%d.%d.%d", &new_major, &new_minor, &new_patch) != 3)
+        return false;
+
+    if (new_major != cur_major) return new_major > cur_major;
+    if (new_minor != cur_minor) return new_minor > cur_minor;
+    return new_patch > cur_patch;
+}
+
+/**
+ * @brief Return true when @p tag represents a Web UI version newer than the
+ *        ui-version currently stored in /index.html on LittleFS.
+ *
+ * Accepts "ui-v1.2.3" (new-style UI tag) or plain "1.2.3".  Returns false
+ * when the LittleFS file is absent, unreadable, or has no ui-version tag.
+ */
+static bool ui_version_is_newer(const char *tag) {
+    const char *v = tag;
+    if (strncmp(v, "ui-v", 4) == 0) v += 4;
+    else if (v[0] == 'v')            v += 1;
+
+    // Read current UI version embedded in LittleFS /index.html.
+    char cur_ui[32] = "";
+    File f = LittleFS.open("/index.html", "r");
+    if (f) {
+        char head[512];
+        const int n = f.readBytes(head, sizeof(head) - 1);
+        head[n] = '\0';
+        f.close();
+        const char *needle = "ui-version\" content=\"";
+        const char *found  = strstr(head, needle);
+        if (found) {
+            const char *start = found + strlen(needle);
+            const char *end   = strchr(start, '"');
+            if (end) {
+                size_t vlen = (size_t)(end - start);
+                if (vlen < sizeof(cur_ui)) {
+                    strncpy(cur_ui, start, vlen);
+                    cur_ui[vlen] = '\0';
+                }
+            }
+        }
+    }
+
+    if (cur_ui[0] == '\0') return false; // unknown current version
+
+    int cur_major = 0, cur_minor = 0, cur_patch = 0;
+    int new_major = 0, new_minor = 0, new_patch = 0;
+
+    if (sscanf(cur_ui, "%d.%d.%d", &cur_major, &cur_minor, &cur_patch) != 3)
         return false;
     if (!v || sscanf(v, "%d.%d.%d", &new_major, &new_minor, &new_patch) != 3)
         return false;
@@ -239,21 +314,19 @@ static void github_update_task(void * /*param*/) {
         if (have_cached) {
             strncpy(asset_url, s_asset_url, sizeof(asset_url) - 1);
             asset_url[sizeof(asset_url) - 1] = '\0';
-            strncpy(html_url,  s_html_url,  sizeof(html_url)  - 1);
-            html_url[sizeof(html_url) - 1] = '\0';
-            DBG_PRINTF("[OTA] Using cached asset URLs for %s\n", s_latest_tag);
+            DBG_PRINTF("[OTA] Using cached firmware URL for %s\n", s_latest_fw_tag);
         }
         xSemaphoreGive(s_tag_mutex);
     }
 
     if (!have_cached) {
-        // ── Step 1: Fetch the latest release info ──────────────────────────────
-        DBG_PRINTF("[OTA] Checking GitHub releases at %s\n", GITHUB_API_URL);
+        // ── Step 1: Fetch the releases list ───────────────────────────────────
+        DBG_PRINTF("[OTA] Checking GitHub releases at %s\n", GITHUB_RELEASES_URL);
         WiFiClientSecure api_client;
         api_client.setInsecure(); // skips certificate verification
 
         HTTPClient http;
-        http.begin(api_client, GITHUB_API_URL);
+        http.begin(api_client, GITHUB_RELEASES_URL);
         http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
         http.setTimeout(OTA_HTTP_TIMEOUT_MS);
         http.addHeader("User-Agent", "ESP32-FilamentSensor/" FIRMWARE_VERSION);
@@ -271,12 +344,17 @@ static void github_update_task(void * /*param*/) {
             return;
         }
 
-        // ── Step 2: Parse release JSON ─────────────────────────────────────────
-        // Use a filter to discard unneeded fields and keep heap usage low.
+        // ── Step 2: Parse releases list JSON ──────────────────────────────────
+        // The response is a JSON array.  Use a filter to keep only the fields
+        // we need (tag_name and asset name + URL) to minimise heap pressure.
         JsonDocument filter;
-        filter["tag_name"] = true;
-        filter["assets"][0]["name"] = true;
-        filter["assets"][0]["browser_download_url"] = true;
+        JsonArray    filter_arr  = filter.to<JsonArray>();
+        JsonObject   filter_item = filter_arr.add<JsonObject>();
+        filter_item["tag_name"]  = true;
+        JsonArray  filter_assets = filter_item["assets"].to<JsonArray>();
+        JsonObject filter_asset  = filter_assets.add<JsonObject>();
+        filter_asset["name"]                    = true;
+        filter_asset["browser_download_url"]    = true;
 
         JsonDocument doc;
         const DeserializationError json_err =
@@ -293,83 +371,116 @@ static void github_update_task(void * /*param*/) {
             return;
         }
 
-        const char *tag = doc["tag_name"] | "";
+        // ── Step 3: Scan releases for latest fw-v* and ui-v* entries ──────────
+        // Releases are returned newest-first; take the first matching entry for
+        // each category.  Old-style "v*" tags (without "ui-v" prefix) count as
+        // firmware releases for backward compatibility.
+        char fw_tag[32]  = "";
+        char ui_tag[32]  = "";
+
+        for (JsonObject release : doc.as<JsonArray>()) {
+            const char *tag = release["tag_name"] | "";
+            // fw-v* or legacy v* (but not ui-v*)
+            const bool is_fw = (strncmp(tag, "fw-v", 4) == 0) ||
+                                (tag[0] == 'v' && strncmp(tag, "ui-v", 4) != 0);
+            const bool is_ui = (strncmp(tag, "ui-v", 4) == 0);
+
+            if (is_fw && fw_tag[0] == '\0') {
+                strncpy(fw_tag, tag, sizeof(fw_tag) - 1);
+                fw_tag[sizeof(fw_tag) - 1] = '\0';
+                for (JsonObject asset : release["assets"].as<JsonArray>()) {
+                    const char *name = asset["name"] | "";
+                    const char *url  = asset["browser_download_url"] | "";
+                    if (strcmp(name, "firmware.bin") == 0) {
+                        strncpy(asset_url, url, sizeof(asset_url) - 1);
+                        asset_url[sizeof(asset_url) - 1] = '\0';
+                        break;
+                    }
+                }
+            }
+            if (is_ui && ui_tag[0] == '\0') {
+                strncpy(ui_tag, tag, sizeof(ui_tag) - 1);
+                ui_tag[sizeof(ui_tag) - 1] = '\0';
+                for (JsonObject asset : release["assets"].as<JsonArray>()) {
+                    const char *name = asset["name"] | "";
+                    const char *url  = asset["browser_download_url"] | "";
+                    if (strcmp(name, "index.html") == 0) {
+                        strncpy(html_url, url, sizeof(html_url) - 1);
+                        html_url[sizeof(html_url) - 1] = '\0';
+                        break;
+                    }
+                }
+            }
+            if (fw_tag[0] != '\0' && ui_tag[0] != '\0') break; // found both
+        }
+
+        const bool fw_newer = (fw_tag[0] != '\0') && version_is_newer(fw_tag);
+        const bool ui_newer = (ui_tag[0] != '\0') && ui_version_is_newer(ui_tag);
+
+        DBG_PRINTF("[OTA] Latest fw: %s (current: %s)%s\n",
+                   fw_tag[0] ? fw_tag : "none", FIRMWARE_VERSION,
+                   fw_newer ? " → update available" : "");
+        DBG_PRINTF("[OTA] Latest ui: %s%s\n",
+                   ui_tag[0] ? ui_tag : "none",
+                   ui_newer ? " → update available" : "");
+
+        // ── Step 4: Cache tags and URLs under the mutex ────────────────────────
         if (s_tag_mutex && xSemaphoreTake(s_tag_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-            strncpy(s_latest_tag, tag, sizeof(s_latest_tag) - 1);
-            s_latest_tag[sizeof(s_latest_tag) - 1] = '\0';
-            // Clear stale cached URLs; repopulate below once asset URLs are known.
+            strncpy(s_latest_fw_tag, fw_tag, sizeof(s_latest_fw_tag) - 1);
+            s_latest_fw_tag[sizeof(s_latest_fw_tag) - 1] = '\0';
+            strncpy(s_latest_ui_tag, ui_tag, sizeof(s_latest_ui_tag) - 1);
+            s_latest_ui_tag[sizeof(s_latest_ui_tag) - 1] = '\0';
+            s_ui_update_available = ui_newer;
+            // Cache asset URL so the update task can reuse it.
             s_asset_url[0] = '\0';
-            s_html_url[0]  = '\0';
+            if (asset_url[0] != '\0') {
+                strncpy(s_asset_url, asset_url, sizeof(s_asset_url) - 1);
+                s_asset_url[sizeof(s_asset_url) - 1] = '\0';
+            }
+            // Cache html URL for the UI-only update task.
+            s_html_url[0] = '\0';
+            if (html_url[0] != '\0') {
+                strncpy(s_html_url, html_url, sizeof(s_html_url) - 1);
+                s_html_url[sizeof(s_html_url) - 1] = '\0';
+            }
             xSemaphoreGive(s_tag_mutex);
         }
 
-        DBG_PRINTF("[OTA] Latest release: %s  (current: %s)\n",
-                      tag, FIRMWARE_VERSION);
-
-        // ── Step 3: Version check ──────────────────────────────────────────────
-        if (!version_is_newer(tag)) {
-            DBG_PRINTLN("[OTA] Firmware is up-to-date");
-            // Cache the index.html URL even when firmware is current so that a
-            // subsequent UI-only update task can skip the API round-trip.
-            const JsonArray utd_assets = doc["assets"].as<JsonArray>();
-            for (const JsonObject asset : utd_assets) {
-                const char *name = asset["name"] | "";
-                const char *url  = asset["browser_download_url"] | "";
-                if (strcmp(name, "index.html") == 0) {
-                    if (s_tag_mutex &&
-                        xSemaphoreTake(s_tag_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-                        strncpy(s_html_url, url, sizeof(s_html_url) - 1);
-                        s_html_url[sizeof(s_html_url) - 1] = '\0';
-                        xSemaphoreGive(s_tag_mutex);
-                    }
-                    break;
-                }
+        // ── Step 5: Set check-only status ──────────────────────────────────────
+        if (s_check_only) {
+            if (fw_newer) {
+                DBG_PRINTF("[OTA] Firmware update available: %s\n", fw_tag);
+                s_status = "update-available";
+            } else if (ui_newer) {
+                DBG_PRINTF("[OTA] UI update available: %s\n", ui_tag);
+                s_status = "ui-update-available";
+            } else {
+                DBG_PRINTLN("[OTA] Everything is up-to-date");
+                s_status = "up-to-date";
             }
-            s_status = "up-to-date";
             s_task_running = false;
             vTaskDelete(nullptr);
             return;
         }
 
-        // ── Step 4: Find the firmware.bin and index.html asset URLs ───────────
-        const JsonArray assets = doc["assets"].as<JsonArray>();
-        for (const JsonObject asset : assets) {
-            const char *name = asset["name"] | "";
-            const char *url  = asset["browser_download_url"] | "";
-            if (strcmp(name, "firmware.bin") == 0) {
-                strncpy(asset_url, url, sizeof(asset_url) - 1);
-                asset_url[sizeof(asset_url) - 1] = '\0';
-            } else if (strcmp(name, "index.html") == 0) {
-                strncpy(html_url, url, sizeof(html_url) - 1);
-                html_url[sizeof(html_url) - 1] = '\0';
+        if (!fw_newer) {
+            // Firmware is up-to-date; update task should not have been called.
+            // Treat it as informational and exit cleanly.
+            DBG_PRINTLN("[OTA] Firmware is already up-to-date – nothing to flash");
+            if (ui_newer) {
+                s_status = "ui-update-available";
+            } else {
+                s_status = "up-to-date";
             }
-        }
-
-        // Cache URLs so a subsequent update task can skip this API call.
-        if (asset_url[0] != '\0' &&
-            s_tag_mutex && xSemaphoreTake(s_tag_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-            strncpy(s_asset_url, asset_url, sizeof(s_asset_url) - 1);
-            s_asset_url[sizeof(s_asset_url) - 1] = '\0';
-            strncpy(s_html_url,  html_url,  sizeof(s_html_url)  - 1);
-            s_html_url[sizeof(s_html_url) - 1] = '\0';
-            xSemaphoreGive(s_tag_mutex);
+            s_task_running = false;
+            vTaskDelete(nullptr);
+            return;
         }
     } // end !have_cached
 
-    // If this is a check-only request, report that an update is available
-    // and let the user confirm before flashing.
-    if (s_check_only) {
-        DBG_PRINTF("[OTA] Update available: %s -> confirm via web UI to apply\n",
-                   s_latest_tag);
-        s_status = "update-available";
-        s_task_running = false;
-        vTaskDelete(nullptr);
-        return;
-    }
-
     if (asset_url[0] == '\0') {
         DBG_PRINTLN("[OTA] No firmware.bin asset found in release");
-        set_error_msg("No firmware.bin asset in release %s", s_latest_tag);
+        set_error_msg("No firmware.bin asset in release %s", s_latest_fw_tag);
         s_status = "failed";
         s_task_running = false;
         vTaskDelete(nullptr);
@@ -379,24 +490,10 @@ static void github_update_task(void * /*param*/) {
     DBG_PRINTF("[OTA] Downloading firmware: %s\n", asset_url);
     s_status = "updating";
 
-    // ── Step 5: Update index.html on LittleFS (before firmware flash) ─────────
-    // The UI file is updated first so that on reboot the new firmware and the
-    // matching UI are both in place.  A failure here is non-fatal: firmware
-    // flashing still proceeds.
-    if (html_url[0] != '\0') {
-        DBG_PRINTF("[OTA] Downloading UI: %s\n", html_url);
-        if (!download_to_lfs(html_url, "/index.html")) {
-            // set_error_msg already contains the UI-download error detail.
-            // Do NOT clear it here: if firmware flash also fails, it will
-            // overwrite with the firmware error; if it succeeds, the device
-            // reboots and the UI error becomes irrelevant.
-            DBG_PRINTLN("[OTA] UI update failed (non-fatal) – proceeding with firmware flash");
-        }
-    } else {
-        DBG_PRINTLN("[OTA] No index.html asset in release – UI not updated");
-    }
-
-    // ── Step 6: Stream firmware via HTTPUpdate ─────────────────────────────
+    // ── Step 6: Stream firmware via HTTPUpdate ─────────────────────────────────
+    // Web UI (index.html) is managed by its own independent release track and
+    // update path (/api/ota/update-ui).  Firmware updates do NOT automatically
+    // overwrite the UI so the two versions remain independently managed.
     WiFiClientSecure fw_client;
     fw_client.setInsecure();
 
@@ -463,6 +560,8 @@ static void github_update_task(void * /*param*/) {
  * Downloads the "index.html" asset from the latest GitHub release and writes
  * it to /index.html on LittleFS.  No firmware flashing or reboot is performed.
  * Reuses the cached html URL from a preceding check task when available.
+ * When no cache is present, performs a fresh releases list query and looks for
+ * the latest ui-v* tag.
  */
 static void github_update_ui_task(void * /*param*/) {
     set_error_msg("");
@@ -487,7 +586,7 @@ static void github_update_ui_task(void * /*param*/) {
         if (have_cached) {
             strncpy(html_url, s_html_url, sizeof(html_url) - 1);
             html_url[sizeof(html_url) - 1] = '\0';
-            DBG_PRINTF("[OTA] Using cached UI URL for %s\n", s_latest_tag);
+            DBG_PRINTF("[OTA] Using cached UI URL for %s\n", s_latest_ui_tag);
         }
         xSemaphoreGive(s_tag_mutex);
     } else {
@@ -495,12 +594,12 @@ static void github_update_ui_task(void * /*param*/) {
     }
 
     if (!have_cached) {
-        DBG_PRINTF("[OTA] Fetching GitHub release info at %s\n", GITHUB_API_URL);
+        DBG_PRINTF("[OTA] Fetching GitHub releases list at %s\n", GITHUB_RELEASES_URL);
         WiFiClientSecure api_client;
         api_client.setInsecure();
 
         HTTPClient http;
-        http.begin(api_client, GITHUB_API_URL);
+        http.begin(api_client, GITHUB_RELEASES_URL);
         http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
         http.setTimeout(OTA_HTTP_TIMEOUT_MS);
         http.addHeader("User-Agent", "ESP32-FilamentSensor/" FIRMWARE_VERSION);
@@ -519,9 +618,13 @@ static void github_update_ui_task(void * /*param*/) {
         }
 
         JsonDocument filter;
-        filter["tag_name"] = true;
-        filter["assets"][0]["name"] = true;
-        filter["assets"][0]["browser_download_url"] = true;
+        JsonArray    filter_arr  = filter.to<JsonArray>();
+        JsonObject   filter_item = filter_arr.add<JsonObject>();
+        filter_item["tag_name"]  = true;
+        JsonArray  filter_assets = filter_item["assets"].to<JsonArray>();
+        JsonObject filter_asset  = filter_assets.add<JsonObject>();
+        filter_asset["name"]                 = true;
+        filter_asset["browser_download_url"] = true;
 
         JsonDocument doc;
         const DeserializationError json_err =
@@ -538,22 +641,29 @@ static void github_update_ui_task(void * /*param*/) {
             return;
         }
 
-        const char *tag = doc["tag_name"] | "";
-        const JsonArray assets = doc["assets"].as<JsonArray>();
-        for (const JsonObject asset : assets) {
-            const char *name = asset["name"] | "";
-            const char *url  = asset["browser_download_url"] | "";
-            if (strcmp(name, "index.html") == 0) {
-                strncpy(html_url, url, sizeof(html_url) - 1);
-                html_url[sizeof(html_url) - 1] = '\0';
-                break;
+        // Scan for the latest ui-v* release and extract its index.html URL.
+        char ui_tag[32] = "";
+        for (JsonObject release : doc.as<JsonArray>()) {
+            const char *tag = release["tag_name"] | "";
+            if (strncmp(tag, "ui-v", 4) != 0) continue; // skip non-UI releases
+            strncpy(ui_tag, tag, sizeof(ui_tag) - 1);
+            ui_tag[sizeof(ui_tag) - 1] = '\0';
+            for (JsonObject asset : release["assets"].as<JsonArray>()) {
+                const char *name = asset["name"] | "";
+                const char *url  = asset["browser_download_url"] | "";
+                if (strcmp(name, "index.html") == 0) {
+                    strncpy(html_url, url, sizeof(html_url) - 1);
+                    html_url[sizeof(html_url) - 1] = '\0';
+                    break;
+                }
             }
+            break; // first match is the most recent
         }
 
         // Cache for future operations.
         if (s_tag_mutex && xSemaphoreTake(s_tag_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-            strncpy(s_latest_tag, tag, sizeof(s_latest_tag) - 1);
-            s_latest_tag[sizeof(s_latest_tag) - 1] = '\0';
+            strncpy(s_latest_ui_tag, ui_tag, sizeof(s_latest_ui_tag) - 1);
+            s_latest_ui_tag[sizeof(s_latest_ui_tag) - 1] = '\0';
             strncpy(s_html_url, html_url, sizeof(s_html_url) - 1);
             s_html_url[sizeof(s_html_url) - 1] = '\0';
             xSemaphoreGive(s_tag_mutex);
@@ -563,8 +673,8 @@ static void github_update_ui_task(void * /*param*/) {
     }
 
     if (html_url[0] == '\0') {
-        DBG_PRINTLN("[OTA] No index.html asset found in release");
-        set_error_msg("No index.html asset in release");
+        DBG_PRINTLN("[OTA] No index.html asset found in any ui-v* release");
+        set_error_msg("No index.html asset in UI release");
         s_status = "failed";
         s_task_running = false;
         vTaskDelete(nullptr);
@@ -578,6 +688,12 @@ static void github_update_ui_task(void * /*param*/) {
         s_task_running = false;
         vTaskDelete(nullptr);
         return;
+    }
+
+    // Clear the ui_update_available flag since the UI is now current.
+    if (s_tag_mutex && xSemaphoreTake(s_tag_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        s_ui_update_available = false;
+        xSemaphoreGive(s_tag_mutex);
     }
 
     DBG_PRINTLN("[OTA] UI updated on LittleFS – no reboot required");
@@ -752,15 +868,35 @@ const char *ota_get_error() {
     return buf;
 }
 
-const char *ota_get_latest_tag() {
+const char *ota_get_latest_fw_tag() {
     // Return a mutex-protected copy to avoid a data race with the OTA task.
     static char buf[32] = "";
     if (s_tag_mutex && xSemaphoreTake(s_tag_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-        strncpy(buf, s_latest_tag, sizeof(buf) - 1);
+        strncpy(buf, s_latest_fw_tag, sizeof(buf) - 1);
         buf[sizeof(buf) - 1] = '\0';
         xSemaphoreGive(s_tag_mutex);
     }
     return buf;
+}
+
+const char *ota_get_latest_ui_tag() {
+    // Return a mutex-protected copy to avoid a data race with the OTA task.
+    static char buf[32] = "";
+    if (s_tag_mutex && xSemaphoreTake(s_tag_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        strncpy(buf, s_latest_ui_tag, sizeof(buf) - 1);
+        buf[sizeof(buf) - 1] = '\0';
+        xSemaphoreGive(s_tag_mutex);
+    }
+    return buf;
+}
+
+bool ota_get_ui_update_available() {
+    bool val = false;
+    if (s_tag_mutex && xSemaphoreTake(s_tag_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        val = s_ui_update_available;
+        xSemaphoreGive(s_tag_mutex);
+    }
+    return val;
 }
 
 const char *ota_get_lfs_ui_version() {
