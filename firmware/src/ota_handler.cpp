@@ -218,8 +218,8 @@ static bool download_to_lfs(const char *url, const char *lfs_path) {
  */
 static bool version_is_newer(const char *tag) {
     const char *v = tag;
-    if (strncmp(v, "fw-v", 4) == 0)      v += 4;
-    else if (v[0] == 'v')                 v += 1;
+    if (strncmp(v, "fw-v", 4) == 0) v += 4;
+    else if (v[0] == 'v')            v += 1;
 
     int cur_major = 0, cur_minor = 0, cur_patch = 0;
     int new_major = 0, new_minor = 0, new_patch = 0;
@@ -373,16 +373,17 @@ static void github_update_task(void * /*param*/) {
 
         // ── Step 3: Scan releases for latest fw-v* and ui-v* entries ──────────
         // Releases are returned newest-first; take the first matching entry for
-        // each category.  Old-style "v*" tags count as firmware for backward compat.
+        // each category.  Old-style "v*" tags (without "ui-v" prefix) count as
+        // firmware releases for backward compatibility.
         char fw_tag[32]  = "";
         char ui_tag[32]  = "";
 
         for (JsonObject release : doc.as<JsonArray>()) {
             const char *tag = release["tag_name"] | "";
-            const bool  is_fw  = (strncmp(tag, "fw-v", 4) == 0) ||
-                                  (tag[0] == 'v' && strncmp(tag, "ui-", 0) != 0 &&
-                                   strncmp(tag, "ui-v", 4) != 0);
-            const bool  is_ui  = (strncmp(tag, "ui-v", 4) == 0);
+            // fw-v* or legacy v* (but not ui-v*)
+            const bool is_fw = (strncmp(tag, "fw-v", 4) == 0) ||
+                                (tag[0] == 'v' && strncmp(tag, "ui-v", 4) != 0);
+            const bool is_ui = (strncmp(tag, "ui-v", 4) == 0);
 
             if (is_fw && fw_tag[0] == '\0') {
                 strncpy(fw_tag, tag, sizeof(fw_tag) - 1);
