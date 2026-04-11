@@ -4,6 +4,7 @@
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
 #include "types.h"
+#include "pin_config.h"
 
 /** Callback type for sending GCODE via WebSocket (implemented by moonraker module). */
 typedef void (*gcode_send_fn_t)(const char *script);
@@ -19,12 +20,15 @@ typedef void (*gcode_send_fn_t)(const char *script);
  * @param config        Pointer to live SensorConfig.
  * @param status        Pointer to live SensorStatus.
  * @param gcode_fn      Callback to send a GCODE script via WebSocket; may be nullptr.
+ * @param runout_pin    GPIO to drive LOW on fault (must be output-capable). Defaults
+ *                      to the compile-time PIN_RUNOUT constant if not specified.
  */
 void fault_detector_init(SemaphoreHandle_t status_mutex,
                          QueueHandle_t     encoder_queue,
                          SensorConfig     *config,
                          SensorStatus     *status,
-                         gcode_send_fn_t   gcode_fn);
+                         gcode_send_fn_t   gcode_fn,
+                         uint8_t           runout_pin = PIN_RUNOUT);
 
 /**
  * @brief Update the fault detector with the latest extruder velocity.

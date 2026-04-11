@@ -44,6 +44,7 @@
 #include "encoder.h"
 #include "fault_detector.h"
 #include "nvs_config.h"
+#include "pin_config.h"
 #include "web_handler.h"
 #include "display_handler.h"
 #include "wifi_handler.h"
@@ -54,6 +55,7 @@
 // ─── Global shared state ──────────────────────────────────────────────────────
 static SensorConfig    g_config{};
 static SensorStatus    g_status{};
+static PinConfig       g_pins{};
 
 static QueueHandle_t   g_encoder_queue = nullptr;
 static SemaphoreHandle_t g_status_mutex = nullptr;
@@ -131,7 +133,8 @@ static void core0_task(void * /*param*/) {
 #endif
 #ifdef ENABLE_DHT
     // ── Initialise DHT22 temperature/humidity sensor (Core 0) ─────────────
-    dht_sensor_init(g_status_mutex, g_config_mutex, &g_status, &g_config);
+    dht_sensor_init(g_status_mutex, g_config_mutex, &g_status, &g_config,
+                    g_pins.dht_pin);
 #endif
 
     // ── Main protocol loop ─────────────────────────────────────────────────
@@ -147,7 +150,7 @@ static void core0_task(void * /*param*/) {
         const bool network_ready = wifi_is_network_ready();
 
         if (network_ready && !web_started) {
-            web_init(g_status_mutex, g_config_mutex, &g_status, &g_config);
+            web_init(g_status_mutex, g_config_mutex, &g_status, &g_config, &g_pins);
             web_started = true;
         }
 
@@ -193,7 +196,7 @@ static void core1_task(void * /*param*/) {
     }
 
     // Initialise encoder ISRs – must run on Core 1 so ISRs are pinned here
-    encoder_init(g_encoder_queue, cfg_ptr);
+    encoder_init(g_encoder_queue, cfg_ptr, &g_pins);
 
     // Run the 50 Hz encoder / speed calculation loop (never returns)
     encoder_task(nullptr);
@@ -223,9 +226,12 @@ void setup() {
     // Load persistent configuration from NVS
     nvs_load(g_config);
 
+    // Load runtime pin assignments from NVS (falls back to compile-time defaults)
+    pin_config_load(g_pins);
+
     // Initialise fault detector (configures runout GPIO); wire GCODE sender
     fault_detector_init(g_status_mutex, g_encoder_queue, &g_config, &g_status,
-                        moonraker_send_gcode);
+                        moonraker_send_gcode, g_pins.runout_pin);
 
     // ── First-boot WiFi-radio safeguard ───────────────────────────────────────
     // On a cold power-on, firstrun is true (RTC_DATA_ATTR is reset when power

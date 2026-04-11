@@ -11,19 +11,22 @@
 /**
  * @brief Initialise the DHT22 sensor driver.
  *
- * Sets up the Adafruit DHT library on DHT_PIN and stores the shared-state
- * pointers used by dht_sensor_tick().  Call once from the Core 0 task after
- * WiFi init so that all sensor I/O stays on a single core.
+ * Sets up the Adafruit DHT library on the given GPIO pin and stores the
+ * shared-state pointers used by dht_sensor_tick().  Call once from the Core 0
+ * task after WiFi init so that all sensor I/O stays on a single core.
  *
  * @param status_mutex  Mutex protecting g_status.
  * @param config_mutex  Mutex protecting g_config.
  * @param status        Pointer to live SensorStatus.
  * @param config        Pointer to live SensorConfig.
+ * @param dht_pin       GPIO pin connected to DHT22 data line.
+ *                      Defaults to compile-time DHT_PIN constant.
  */
 void dht_sensor_init(SemaphoreHandle_t status_mutex,
                      SemaphoreHandle_t config_mutex,
                      SensorStatus     *status,
-                     SensorConfig     *config);
+                     SensorConfig     *config,
+                     uint8_t           dht_pin = DHT_PIN);
 
 /**
  * @brief Poll the DHT22 sensor (non-blocking, respects DHT_READ_INTERVAL_MS).

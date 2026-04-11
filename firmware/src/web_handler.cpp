@@ -1,6 +1,7 @@
 #include "web_handler.h"
 #include "fault_detector.h"
 #include "nvs_config.h"
+#include "pin_config.h"
 #include "ota_handler.h"
 #include "moonraker.h"
 #include "wifi_handler.h"
@@ -20,6 +21,7 @@ static SemaphoreHandle_t  s_status_mutex = nullptr;
 static SemaphoreHandle_t  s_config_mutex = nullptr;
 static SensorStatus      *s_status       = nullptr;
 static SensorConfig      *s_config       = nullptr;
+static PinConfig         *s_pins         = nullptr;
 
 // ─── Fallback page (served when LittleFS index.html is absent) ───────────────
 // This is intentionally minimal. The full web UI lives in data/index.html and
@@ -525,6 +527,105 @@ static void handle_dht() {
 }
 #endif // ENABLE_DHT
 
+// ─── Pin configuration handlers ───────────────────────────────────────────────
+static void handle_get_pins() {
+    if (s_pins == nullptr) {
+        s_server.send(503, "application/json", "{\"ok\":false,\"error\":\"pins not initialised\"}");
+        return;
+    }
+    JsonDocument doc;
+    doc["enc_a_pin"]   = s_pins->enc_a_pin;
+    doc["enc_b_pin"]   = s_pins->enc_b_pin;
+    doc["enc_btn_pin"] = s_pins->enc_btn_pin;
+    doc["runout_pin"]  = s_pins->runout_pin;
+#ifdef ENABLE_DHT
+    doc["dht_pin"]     = s_pins->dht_pin;
+#endif
+    String out;
+    serializeJson(doc, out);
+    s_server.send(200, "application/json", out);
+}
+
+static void handle_post_pins() {
+    if (s_pins == nullptr) {
+        s_server.send(503, "application/json", "{\"ok\":false,\"error\":\"pins not initialised\"}");
+        return;
+    }
+    if (!s_server.hasArg("plain")) {
+        s_server.send(400, "application/json", "{\"ok\":false,\"error\":\"no body\"}");
+        return;
+    }
+    JsonDocument doc;
+    if (deserializeJson(doc, s_server.arg("plain"))) {
+        s_server.send(400, "application/json",
+                      "{\"ok\":false,\"error\":\"invalid JSON\"}");
+        return;
+    }
+
+    // Work on a copy; only commit if all supplied values are valid.
+    PinConfig candidate = *s_pins;
+
+    // Helper lambda-style validation: returns false and sends error if invalid.
+    auto check_gpio = [&](const char *key, uint8_t &field, bool must_be_output) -> bool {
+        if (!doc[key].is<int>()) return true;  // field absent – keep current
+        const int v = doc[key].as<int>();
+        if (v < 0 || v > 39 || !pin_config_valid_gpio(static_cast<uint8_t>(v))) {
+            char err[64];
+            snprintf(err, sizeof(err),
+                     "{\"ok\":false,\"error\":\"%s: invalid GPIO (0-39, not 6-11)\"}", key);
+            s_server.send(400, "application/json", err);
+            return false;
+        }
+        if (must_be_output && !pin_config_output_capable(static_cast<uint8_t>(v))) {
+            char err[80];
+            snprintf(err, sizeof(err),
+                     "{\"ok\":false,\"error\":\"%s: must be output-capable (GPIO 0-33)\"}", key);
+            s_server.send(400, "application/json", err);
+            return false;
+        }
+        field = static_cast<uint8_t>(v);
+        return true;
+    };
+
+    if (!check_gpio("enc_a_pin",   candidate.enc_a_pin,   false)) return;
+    if (!check_gpio("enc_b_pin",   candidate.enc_b_pin,   false)) return;
+    if (!check_gpio("enc_btn_pin", candidate.enc_btn_pin, false)) return;
+    if (!check_gpio("runout_pin",  candidate.runout_pin,  true))  return;
+#ifdef ENABLE_DHT
+    if (!check_gpio("dht_pin",     candidate.dht_pin,     false)) return;
+#endif
+
+    // Reject duplicate pin assignments.
+    const uint8_t pins_arr[] = {
+        candidate.enc_a_pin,
+        candidate.enc_b_pin,
+        candidate.enc_btn_pin,
+        candidate.runout_pin,
+#ifdef ENABLE_DHT
+        candidate.dht_pin,
+#endif
+    };
+    constexpr uint8_t N = sizeof(pins_arr) / sizeof(pins_arr[0]);
+    for (uint8_t i = 0; i < N; ++i) {
+        for (uint8_t j = i + 1; j < N; ++j) {
+            if (pins_arr[i] == pins_arr[j]) {
+                s_server.send(400, "application/json",
+                              "{\"ok\":false,\"error\":\"duplicate pin assignment\"}");
+                return;
+            }
+        }
+    }
+
+    // Persist and reboot.
+    *s_pins = candidate;
+    pin_config_save(candidate);
+
+    // Send the response before restarting so the client receives confirmation.
+    s_server.send(200, "application/json", "{\"ok\":true,\"reboot\":true}");
+    delay(200);
+    ESP.restart();
+}
+
 static void handle_not_found() {  const String uri = s_server.uri();
   if (uri.startsWith("/api/")) {
     s_server.send(404, "application/json", "{\"ok\":false,\"error\":\"not found\"}");
@@ -549,11 +650,13 @@ static void handle_not_found() {  const String uri = s_server.uri();
 void web_init(SemaphoreHandle_t status_mutex,
               SemaphoreHandle_t config_mutex,
               SensorStatus     *status,
-              SensorConfig     *config) {
+              SensorConfig     *config,
+              PinConfig        *pins) {
     s_status_mutex = status_mutex;
     s_config_mutex = config_mutex;
     s_status       = status;
     s_config       = config;
+    s_pins         = pins;
 
     // Mount LittleFS – don't format on failure so we don't destroy user data.
     // If mount fails the fallback PROGMEM page will be served instead.
@@ -581,6 +684,8 @@ void web_init(SemaphoreHandle_t status_mutex,
 #ifdef ENABLE_DHT
     s_server.on("/api/dht",        HTTP_GET,  handle_dht);
 #endif
+    s_server.on("/api/pins",       HTTP_GET,  handle_get_pins);
+    s_server.on("/api/pins",       HTTP_POST, handle_post_pins);
     s_server.onNotFound(handle_not_found);
 
     s_server.begin();
