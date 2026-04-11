@@ -316,6 +316,87 @@
     </div>
   </main>
 
+  <!-- Pin Configuration Card -->
+  <div class="card">
+    <h2>Pin Configuration</h2>
+    <p style="font-size:.8rem;color:#aaa;margin-bottom:8px">
+      Change GPIO pin assignments. New assignments are stored in NVS and take
+      effect after the device reboots automatically.<br>
+      <strong style="color:#fa0">&#9888; GPIO 34–39 are input-only; do not assign the runout pin there.
+      GPIO 6–11 are reserved for SPI flash.</strong>
+    </p>
+    <div class="row">
+      <div>
+        <label>Encoder Ch-A pin</label>
+        <input type="number" id="pin-enc-a" step="1" min="0" max="39"/>
+      </div>
+      <div>
+        <label>Encoder Ch-B pin</label>
+        <input type="number" id="pin-enc-b" step="1" min="0" max="39"/>
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>Encoder button pin</label>
+        <input type="number" id="pin-enc-btn" step="1" min="0" max="39"/>
+      </div>
+      <div>
+        <label>Runout output pin</label>
+        <input type="number" id="pin-runout" step="1" min="0" max="33"/>
+      </div>
+    </div>
+    <div class="row" id="pin-dht-row">
+      <div>
+        <label>DHT22 data pin</label>
+        <input type="number" id="pin-dht" step="1" min="0" max="39"/>
+      </div>
+      <div></div>
+    </div>
+    <button class="btn-save" onclick="savePins()">Save &amp; Reboot</button>
+    <div id="pin-msg" style="font-size:.8rem;text-align:center;margin-top:6px;min-height:1.2em;color:#0f0"></div>
+  </div>
+
+  <!-- OTA Update Card -->
+  <div class="card">
+    <h2>Firmware Update</h2>
+    <table>
+      <tr><td>Installed version</td><td id="ota-ver">-</td></tr>
+      <tr><td>UI version (LittleFS)</td><td id="ota-ui-ver">-</td></tr>
+      <tr><td>Latest release</td>   <td id="ota-latest">-</td></tr>
+      <tr><td>Status</td>           <td id="ota-status">-</td></tr>
+    </table>
+    <div id="ota-error" style="font-size:.8rem;color:#f66;margin-top:6px;word-break:break-word;display:none"></div>
+    <button class="btn-save" id="btn-check" onclick="checkForUpdates()" style="margin-top:10px">
+      Check for Updates
+    </button>
+    <button class="btn-reset" id="btn-apply" onclick="applyUpdate()" style="margin-top:6px;display:none">
+      Apply Update
+    </button>
+    <button class="btn-save" id="btn-update-ui" onclick="updateUiOnly()" style="margin-top:6px;display:none">
+      Update UI
+    </button>
+  </div>
+
+  <!-- Diagnostics Card -->
+  <div class="card">
+    <h2>Diagnostics</h2>
+    <table>
+      <tr><td>Uptime</td><td id="diag-uptime">-</td></tr>
+      <tr><td>Heap free / min</td><td id="diag-heap">-</td></tr>
+      <tr><td>WiFi disconnect reason</td><td id="diag-disc">-</td></tr>
+      <tr><td>MR ws init/conn/sub</td><td id="diag-mr-state">-</td></tr>
+      <tr><td>MR stale / age</td><td id="diag-mr-age">-</td></tr>
+      <tr><td>MR target</td><td id="diag-mr-target">-</td></tr>
+      <tr><td>MR last connect</td><td id="diag-mr-last">-</td></tr>
+      <tr><td>MR raw WS probe</td><td id="diag-mr-probe">-</td></tr>
+      <tr><td>MR probe status line</td><td id="diag-mr-probe-line">-</td></tr>
+      <tr><td>MR conn/disc/start</td><td id="diag-mr-evt">-</td></tr>
+      <tr><td>MR info/sub/query</td><td id="diag-mr-req">-</td></tr>
+      <tr><td>MR JSON errors</td><td id="diag-mr-json">-</td></tr>
+    </table>
+    <p style="font-size:.75rem;color:#666;margin:10px 0 3px">Event log</p>
+    <pre id="diag-mr-log" style="font-size:.7rem;background:#0a0a0a;padding:8px;border-radius:4px;white-space:pre-wrap;word-break:break-all;max-height:150px;overflow-y:auto;color:#7c7;margin:0">(no events)</pre>
+  </div>
   <script>
     const UI_VERSION = "1.2.0"; // bumped automatically by release.yml on each GitHub release
     let maxVel = 10;
@@ -704,8 +785,61 @@
     }
 
     // ─── Init ─────────────────────────────────────────────────────────────────────
+    // ─── Pin Configuration ─────────────────────────────────────────────────────
+    function loadPins() {
+      fetch('/api/pins')
+        .then(r=>r.json())
+        .then(d=>{
+          document.getElementById('pin-enc-a').value   = d.enc_a_pin;
+          document.getElementById('pin-enc-b').value   = d.enc_b_pin;
+          document.getElementById('pin-enc-btn').value = d.enc_btn_pin;
+          document.getElementById('pin-runout').value  = d.runout_pin;
+          if (d.dht_pin !== undefined) {
+            document.getElementById('pin-dht').value   = d.dht_pin;
+          } else {
+            const row = document.getElementById('pin-dht-row');
+            if (row) row.style.display = 'none';
+          }
+        }).catch(()=>{});
+    }
+
+    function savePins() {
+      const body = {
+        enc_a_pin:   parseInt(document.getElementById('pin-enc-a').value,   10),
+        enc_b_pin:   parseInt(document.getElementById('pin-enc-b').value,   10),
+        enc_btn_pin: parseInt(document.getElementById('pin-enc-btn').value, 10),
+        runout_pin:  parseInt(document.getElementById('pin-runout').value,  10)
+      };
+      const dhtEl = document.getElementById('pin-dht');
+      if (dhtEl && dhtEl.value !== '') body.dht_pin = parseInt(dhtEl.value, 10);
+
+      const msgEl = document.getElementById('pin-msg');
+      msgEl.textContent = 'Saving…';
+      msgEl.style.color = '#aaa';
+      fetch('/api/pins', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)
+      })
+        .then(r=>r.json())
+        .then(d=>{
+          if (d.ok) {
+            msgEl.textContent = '✓ Saved – device rebooting…';
+            msgEl.style.color = '#4f4';
+          } else {
+            msgEl.textContent = '✗ ' + (d.error || 'Error');
+            msgEl.style.color = '#f44';
+          }
+        })
+        .catch(()=>{
+          msgEl.textContent = '✗ Request failed';
+          msgEl.style.color = '#f44';
+        });
+    }
+
     loadConfig();
     loadOta();
+    loadPins();
     refresh();
     refreshDiag();
     setInterval(refresh, 1000);

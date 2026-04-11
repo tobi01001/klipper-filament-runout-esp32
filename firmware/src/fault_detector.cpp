@@ -12,6 +12,7 @@ static QueueHandle_t     s_encoder_queue = nullptr;
 static SensorConfig     *s_cfg           = nullptr;
 static SensorStatus     *s_status        = nullptr;
 static gcode_send_fn_t   s_gcode_fn      = nullptr;
+static uint8_t           s_runout_pin    = PIN_RUNOUT;
 
 // ─── Calibration state ───────────────────────────────────────────────────────────────────
 static CalState    s_cal_state         = CalState::IDLE;
@@ -37,9 +38,9 @@ static void set_state(SystemState next) {
 }
 
 static void trigger_fault() {
-    digitalWrite(PIN_RUNOUT, LOW);  // Active-LOW signal to Klipper
+    digitalWrite(s_runout_pin, LOW);  // Active-LOW signal to Klipper
     DBG_PRINTLN("[FAULT] Filament runout detected! GPIO " +
-                   String(PIN_RUNOUT) + " → LOW");
+                   String(s_runout_pin) + " → LOW");
     set_state(SystemState::FAULT);
 
     if (xSemaphoreTake(s_status_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
@@ -59,19 +60,21 @@ void fault_detector_init(SemaphoreHandle_t status_mutex,
                          QueueHandle_t     encoder_queue,
                          SensorConfig     *config,
                          SensorStatus     *status,
-                         gcode_send_fn_t   gcode_fn) {
+                         gcode_send_fn_t   gcode_fn,
+                         uint8_t           runout_pin) {
     s_status_mutex  = status_mutex;
     s_encoder_queue = encoder_queue;
     s_cfg           = config;
     s_status        = status;
     s_gcode_fn      = gcode_fn;
+    s_runout_pin    = runout_pin;
 
     // Runout pin: default HIGH (no fault)
-    pinMode(PIN_RUNOUT, OUTPUT);
-    digitalWrite(PIN_RUNOUT, HIGH);
+    pinMode(s_runout_pin, OUTPUT);
+    digitalWrite(s_runout_pin, HIGH);
 
     DBG_PRINTLN("[FD] Fault detector initialised (runout pin " +
-                   String(PIN_RUNOUT) + ")");
+                   String(s_runout_pin) + ")");
 }
 
 void fault_detector_update(float ext_vel_mm_s) {
@@ -231,8 +234,8 @@ void fault_detector_update(float ext_vel_mm_s) {
 }
 
 void fault_detector_reset() {
-    digitalWrite(PIN_RUNOUT, HIGH);
-    DBG_PRINTLN("[FD] Fault cleared, GPIO " + String(PIN_RUNOUT) + " → HIGH");
+    digitalWrite(s_runout_pin, HIGH);
+    DBG_PRINTLN("[FD] Fault cleared, GPIO " + String(s_runout_pin) + " → HIGH");
 
     if (xSemaphoreTake(s_status_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
         s_status->fault_active = false;

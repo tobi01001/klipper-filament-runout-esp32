@@ -24,7 +24,7 @@ via a Moonraker API poll and a direct runout GPIO signal.
 | **Configurable fault timeout** | Default 2 s; adjustable 0.5–10 s |
 | **Physical fault reset** | Press the KY-040 knob to clear a runout fault |
 | **Web configuration UI** | Mobile-friendly dashboard; no app required |
-| **NVS persistence** | All settings survive power cycles and firmware updates |
+| **NVS persistence** | All settings (including GPIO pin assignments) survive power cycles and firmware updates |
 | **WiFi AP fallback** | First-boot or credential-loss → AP mode for setup |
 | **Exponential backoff reconnect** | WiFi loss recovery ≤ 60 s |
 | **ArduinoOTA** | Push firmware directly from VS Code / PlatformIO over WiFi |
@@ -54,7 +54,8 @@ klipper-filament-runout-esp32/
         ├── encoder.h / .cpp         ← Quadrature ISR + SW button + 50 Hz Core 1 task
         ├── moonraker.h / .cpp       ← WebSocket-based Klipper / Moonraker client
         ├── fault_detector.h / .cpp  ← State machine + GPIO 27 runout signal
-        ├── nvs_config.h / .cpp      ← Preferences (NVS) load/save
+        ├── nvs_config.h / .cpp      ← Preferences (NVS) load/save (sensor config)
+        ├── pin_config.h / .cpp      ← Runtime GPIO pin assignments with NVS persistence
         ├── ota_handler.h / .cpp     ← ArduinoOTA + GitHub release OTA
         ├── ota_runtime.h / .cpp     ← OTA lifecycle integration
         ├── wifi_handler.h / .cpp    ← Non-blocking WiFi state machine + captive portal
@@ -113,7 +114,73 @@ and open `http://192.168.4.1` to configure your network and Moonraker details.
 | 21 | OLED SDA (optional) | I²C |
 | 22 | OLED SCL (optional) | I²C |
 
-All pins are configurable in `firmware/src/config.h`.
+All pins are configurable in `firmware/src/config.h` (compile-time defaults) or
+at runtime via the web interface — see [Runtime Pin Configuration](#-runtime-pin-configuration) below.
+
+---
+
+## 🎛️ Runtime Pin Configuration
+
+Pin assignments for all GPIO peripherals can be changed **without recompiling the firmware** through the web interface.
+
+### How to change a pin
+
+1. Open `http://<sensor-ip>` in your browser.
+2. Scroll to the **Pin Configuration** card.
+3. Enter the desired GPIO numbers.
+4. Click **Save & Reboot** — the device saves the new assignments to NVS and restarts automatically.
+
+After the reboot the new pin assignments are active and persistent across future reboots.
+
+### Configurable pins
+
+| Field | Default GPIO | Notes |
+|-------|-------------|-------|
+| Encoder Ch-A | 25 | KY-040 CLK — input, internal pull-up |
+| Encoder Ch-B | 26 | KY-040 DT — input, internal pull-up |
+| Encoder button | 32 | KY-040 SW — input; GPIO 32/33 support `INPUT_PULLUP`; 34–39 require external pull-up |
+| Runout output | 27 | Active-LOW to Klipper; must be output-capable (GPIO 0–33) |
+| DHT22 data | 4 | Only shown when DHT22 support is compiled in |
+
+### Constraints
+
+- GPIO 6–11 are reserved for the internal SPI flash and cannot be used.
+- GPIO 34–39 are **input-only** and cannot be used as the runout output.
+- All five pins must be unique; duplicate assignments are rejected with an error.
+- OLED I²C pins (21/22) are not exposed here; change them in `config.h` and reflash if needed.
+
+### API
+
+The configuration is also accessible via the REST API:
+
+```bash
+# Read current pin assignments
+curl http://<sensor-ip>/api/pins
+
+# Update one or more pins (device reboots on success)
+curl -X POST http://<sensor-ip>/api/pins \
+     -H 'Content-Type: application/json' \
+     -d '{"runout_pin":33,"dht_pin":5}'
+```
+
+**`GET /api/pins`** response:
+```json
+{"enc_a_pin":25,"enc_b_pin":26,"enc_btn_pin":32,"runout_pin":27,"dht_pin":4}
+```
+
+**`POST /api/pins`** success (device reboots ~200 ms later):
+```json
+{"ok":true,"reboot":true}
+```
+
+**`POST /api/pins`** validation error:
+```json
+{"ok":false,"error":"runout_pin: must be output-capable (GPIO 0-33)"}
+```
+
+### NVS storage
+
+Pin assignments are stored in the NVS namespace **`pin_cfg`** with keys `enc_a`, `enc_b`, `enc_btn`, `runout`, and `dht`. The compile-time defaults from `config.h` are used on first boot when no NVS entries exist, so a factory reset or NVS erase restores the original wiring.
 
 ---
 

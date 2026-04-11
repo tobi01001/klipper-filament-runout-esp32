@@ -4,6 +4,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include "types.h"
+#include "pin_config.h"
 
 // ─── Shared with fault detector (ISR-updated, volatile) ──────────────────────
 // Timestamp of the most recent encoder edge; readable from any core.
@@ -26,8 +27,9 @@ extern volatile bool g_button_pressed;
  * @param queue  Single-slot overwriting queue; encoder_task writes latest
  *               EncoderData here every ENCODER_UPDATE_MS milliseconds.
  * @param cfg    Pointer to live SensorConfig (cal_factor is read every cycle).
+ * @param pins   Pointer to PinConfig (enc_a_pin, enc_b_pin, enc_btn_pin used).
  */
-void encoder_init(QueueHandle_t queue, const SensorConfig *cfg);
+void encoder_init(QueueHandle_t queue, const SensorConfig *cfg, const PinConfig *pins);
 
 /**
  * @brief Core 1 real-time task – speed calculation at 50 Hz.
