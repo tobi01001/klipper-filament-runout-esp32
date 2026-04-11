@@ -33,7 +33,12 @@ void dht_sensor_init(SemaphoreHandle_t status_mutex,
     s_config       = config;
 
     // Allocate DHT object with the runtime-configured pin.
-    // This single allocation lives for the process lifetime (never freed).
+    // Guard against accidental double-initialisation: free the old object first.
+    if (s_dht != nullptr) {
+        delete s_dht;
+        s_dht = nullptr;
+    }
+    // This single allocation lives for the process lifetime under normal operation.
     s_dht = new DHT(dht_pin, DHT22);
     s_dht->begin();
     s_initialized = true;

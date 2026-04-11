@@ -605,7 +605,7 @@ static void handle_post_pins() {
         candidate.dht_pin,
 #endif
     };
-    constexpr uint8_t N = sizeof(pins_arr);
+    constexpr uint8_t N = sizeof(pins_arr) / sizeof(pins_arr[0]);
     for (uint8_t i = 0; i < N; ++i) {
         for (uint8_t j = i + 1; j < N; ++j) {
             if (pins_arr[i] == pins_arr[j]) {
