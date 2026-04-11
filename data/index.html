@@ -3,16 +3,46 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="ui-version" content="1.1.4" />
+  <meta name="ui-version" content="1.2.0" />
   <title>Filament Runout Sensor</title>
   <style>
+    /* ─── Reset & base ──────────────────────────────────────────────────────── */
     *{box-sizing:border-box;margin:0;padding:0}
     body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-         background:#111;color:#eee;padding:16px}
-    h1{font-size:1.4rem;margin-bottom:16px;color:#f90}
+         background:#111;color:#eee;min-height:100vh}
+
+    /* ─── Navigation bar ────────────────────────────────────────────────────── */
+    nav{position:sticky;top:0;z-index:100;background:#181818;
+        border-bottom:2px solid #333;display:flex;align-items:stretch}
+    .nav-brand{padding:0 14px;display:flex;align-items:center;color:#f90;
+               font-weight:700;font-size:1rem;white-space:nowrap;flex-shrink:0;
+               border-right:1px solid #333;gap:8px}
+    .nav-brand svg{width:22px;height:22px}
+    .nav-tabs{display:flex;flex:1;overflow-x:auto;-webkit-overflow-scrolling:touch;
+              scrollbar-width:none}
+    .nav-tabs::-webkit-scrollbar{display:none}
+    .nav-tab{display:flex;flex-direction:column;align-items:center;justify-content:center;
+             padding:8px 14px;cursor:pointer;color:#888;font-size:.72rem;font-weight:600;
+             border-bottom:3px solid transparent;
+             transition:color .15s,border-color .15s;
+             white-space:nowrap;gap:3px;flex:1;min-width:64px;user-select:none}
+    .nav-tab svg{width:20px;height:20px;
+                 fill:none;stroke:currentColor;stroke-width:2;
+                 stroke-linecap:round;stroke-linejoin:round}
+    .nav-tab.active{color:#f90;border-bottom-color:#f90}
+    .nav-tab:hover:not(.active){color:#ccc}
+
+    /* ─── Page content ──────────────────────────────────────────────────────── */
+    main{padding:16px;max-width:800px;margin:0 auto}
+    .page{display:none}
+    .page.active{display:block}
     h2{font-size:1rem;margin-bottom:10px;color:#aaa}
+
+    /* ─── Cards ─────────────────────────────────────────────────────────────── */
     .card{background:#1e1e1e;border-radius:8px;padding:16px;margin-bottom:14px;
           border:1px solid #333}
+
+    /* ─── Status badge ──────────────────────────────────────────────────────── */
     .badge{display:inline-block;padding:4px 12px;border-radius:20px;
            font-size:.85rem;font-weight:600;margin-bottom:12px}
     .badge-ready   {background:#0a5;color:#fff}
@@ -21,238 +51,341 @@
     .badge-idle    {background:#555;color:#fff}
     .badge-wifi    {background:#a60;color:#fff}
     @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+
+    /* ─── Table ─────────────────────────────────────────────────────────────── */
     table{width:100%;border-collapse:collapse;font-size:.9rem}
     td{padding:5px 4px;border-bottom:1px solid #2a2a2a}
     td:first-child{color:#aaa;width:55%}
     td:last-child{text-align:right;font-family:monospace}
+
+    /* ─── Form controls ─────────────────────────────────────────────────────── */
     label{display:block;font-size:.85rem;color:#aaa;margin:8px 0 2px}
-    input[type=text],input[type=number]{width:100%;padding:6px 8px;
-      background:#2a2a2a;border:1px solid #444;border-radius:4px;
-      color:#eee;font-size:.9rem}
+    input[type=text],input[type=number],input[type=password]{
+      width:100%;padding:6px 8px;background:#2a2a2a;border:1px solid #444;
+      border-radius:4px;color:#eee;font-size:.9rem}
     .row{display:flex;gap:10px;flex-wrap:wrap}
     .row>*{flex:1 1 220px;min-width:0}
     button{width:100%;margin-top:10px;padding:8px;border:none;border-radius:5px;
            font-size:.9rem;cursor:pointer;font-weight:600}
-    .btn-save  {background:#0a5;color:#fff}
-    .btn-reset {background:#c00;color:#fff}
-    .btn-save:hover{background:#0c6}
+    .btn-save {background:#0a5;color:#fff}
+    .btn-reset{background:#c00;color:#fff}
+    .btn-save:hover {background:#0c6}
     .btn-reset:hover{background:#e00}
+    button:disabled{opacity:.5;cursor:not-allowed}
     #msg{font-size:.8rem;text-align:center;margin-top:6px;min-height:1.2em;color:#0f0}
-    .vel-bar{height:8px;background:#2a2a2a;border-radius:4px;margin-top:4px;
-             overflow:hidden}
-    .vel-bar-inner{height:100%;background:#06f;border-radius:4px;
-                   transition:width .3s}
+
+    /* ─── Velocity bar ──────────────────────────────────────────────────────── */
+    .vel-bar{height:8px;background:#2a2a2a;border-radius:4px;margin-top:4px;overflow:hidden}
+    .vel-bar-inner{height:100%;background:#06f;border-radius:4px;transition:width .3s}
+
+    /* ─── Toggle row ────────────────────────────────────────────────────────── */
     .toggle-row{display:flex;align-items:flex-start;gap:10px;margin:8px 0 2px;flex-wrap:wrap}
     .toggle-row label{margin:0;flex:1 1 220px}
     input[type=checkbox]{width:18px;height:18px;accent-color:#06f;cursor:pointer}
-    @media (max-width: 560px){
-      body{padding:10px}
+
+    /* ─── Responsive ─────────────────────────────────────────────────────────── */
+    @media(max-width:560px){
+      main{padding:10px}
       .card{padding:12px}
       .row{gap:8px}
       .row>*{flex-basis:100%}
       td:first-child{width:58%}
+      .nav-brand span{display:none}
+      .nav-tab{padding:8px 10px;font-size:.68rem;min-width:56px}
     }
   </style>
 </head>
 <body>
-  <h1>Filament Runout Sensor</h1>
 
-  <!-- Status Card -->
-  <div class="card">
-    <h2>Live Status</h2>
-    <div id="badge" class="badge badge-idle">…</div>
-    <table>
-      <tr><td>Encoder velocity</td><td id="enc-vel">-</td></tr>
-      <tr><td>Extruder velocity</td><td id="ext-vel">-</td></tr>
-      <tr><td>Moonraker link</td><td id="mr-link">-</td></tr>
-      <tr><td>Klippy state</td><td id="klippy">-</td></tr>
-      <tr><td>Tick count</td><td id="ticks">-</td></tr>
-      <tr><td>Direction</td><td id="dir">-</td></tr>
-      <tr><td>Last motion</td><td id="motion-ago">-</td></tr>
-      <tr><td>Fault active</td><td id="fault">-</td></tr>
-      <tr><td>IP address</td><td id="ip">-</td></tr>
-      <tr><td>Temperature</td><td id="dht-temp">-</td></tr>
-      <tr><td>Humidity</td><td id="dht-hum">-</td></tr>
-    </table>
-    <div class="vel-bar"><div class="vel-bar-inner" id="vel-bar" style="width:0%"></div></div>
-    <button class="btn-reset" onclick="resetFault()">Reset Fault</button>
-  </div>
+  <!-- ─── Navigation ──────────────────────────────────────────────────────── -->
+  <nav>
+    <div class="nav-brand">
+      <!-- Filament spool icon -->
+      <svg viewBox="0 0 24 24" fill="none" stroke="#f90" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"/>
+        <circle cx="12" cy="12" r="3"/>
+      </svg>
+      <span>Filament Runout</span>
+    </div>
+    <div class="nav-tabs">
+      <!-- Status -->
+      <div class="nav-tab active" id="tab-status" onclick="showPage('status')">
+        <svg viewBox="0 0 24 24">
+          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+        </svg>
+        Status
+      </div>
+      <!-- Config -->
+      <div class="nav-tab" id="tab-config" onclick="showPage('config')">
+        <svg viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06
+                   a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09
+                   A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83
+                   l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09
+                   A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83
+                   l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09
+                   a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83
+                   l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09
+                   a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+        Config
+      </div>
+      <!-- Calibration & Update -->
+      <div class="nav-tab" id="tab-calib" onclick="showPage('calib')">
+        <svg viewBox="0 0 24 24">
+          <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77
+                   a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91
+                   a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+        </svg>
+        Calib &amp; Update
+      </div>
+      <!-- Diagnostics -->
+      <div class="nav-tab" id="tab-diag" onclick="showPage('diag')">
+        <svg viewBox="0 0 24 24">
+          <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+          <line x1="8" y1="21" x2="16" y2="21"/>
+          <line x1="12" y1="17" x2="12" y2="21"/>
+        </svg>
+        Diagnostics
+      </div>
+      <!-- Pin Config -->
+      <div class="nav-tab" id="tab-pins" onclick="showPage('pins')">
+        <svg viewBox="0 0 24 24">
+          <line x1="9" y1="18" x2="15" y2="18"/>
+          <line x1="10" y1="22" x2="14" y2="22"/>
+          <path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14"/>
+        </svg>
+        Pins
+      </div>
+    </div>
+  </nav>
 
-  <!-- Configuration Card -->
-  <div class="card">
-    <h2>Configuration</h2>
-    <div class="row">
-      <div>
-        <label>Calibration factor (mm/tick)</label>
-        <input type="number" id="cal" step="0.001" min="0.001" max="10"/>
-      </div>
-      <div>
-        <label>Fault timeout (ms)</label>
-        <input type="number" id="timeout" step="100" min="500" max="10000"/>
-      </div>
-    </div>
-    <div class="row">
-      <div>
-        <label>Min extruder velocity (mm/s)</label>
-        <input type="number" id="min-vel" step="0.1" min="0.1" max="20"/>
-      </div>
-      <div>
-        <label>Motion threshold (ticks)</label>
-        <input type="number" id="thresh" step="1" min="1" max="100"/>
-      </div>
-    </div>
-    <div class="row">
-      <div>
-        <label>Moonraker IP / hostname</label>
-        <input type="text" id="mr-ip" maxlength="39"/>
-      </div>
-      <div>
-        <label>Moonraker port</label>
-        <input type="number" id="mr-port" step="1" min="1" max="65535"/>
+  <main>
+    <!-- ─── Page: Status ──────────────────────────────────────────────────── -->
+    <div class="page active" id="page-status">
+      <div class="card">
+        <h2>Live Status</h2>
+        <div id="badge" class="badge badge-idle">…</div>
+        <table>
+          <tr><td>Encoder velocity</td><td id="enc-vel">-</td></tr>
+          <tr><td>Extruder velocity</td><td id="ext-vel">-</td></tr>
+          <tr><td>Moonraker link</td><td id="mr-link">-</td></tr>
+          <tr><td>Klippy state</td><td id="klippy">-</td></tr>
+          <tr><td>Tick count</td><td id="ticks">-</td></tr>
+          <tr><td>Direction</td><td id="dir">-</td></tr>
+          <tr><td>Last motion</td><td id="motion-ago">-</td></tr>
+          <tr><td>Fault active</td><td id="fault">-</td></tr>
+          <tr><td>IP address</td><td id="ip">-</td></tr>
+          <tr><td>Temperature</td><td id="dht-temp">-</td></tr>
+          <tr><td>Humidity</td><td id="dht-hum">-</td></tr>
+        </table>
+        <div class="vel-bar"><div class="vel-bar-inner" id="vel-bar" style="width:0%"></div></div>
+        <button class="btn-reset" onclick="resetFault()">Reset Fault</button>
       </div>
     </div>
-    <label>WiFi SSID</label>
-    <input type="text" id="wifi-ssid" maxlength="63"/>
-    <label>WiFi Password</label>
-    <input type="text" id="wifi-pass" maxlength="63" placeholder="leave blank to keep current"/>
-    <div class="row">
-      <div>
-        <label>OTA hostname (.local)</label>
-        <input type="text" id="ota-host" maxlength="31" placeholder="filament-sensor"/>
-      </div>
-      <div>
-        <label>OTA push password</label>
-        <input type="password" id="ota-pass" maxlength="31" placeholder="leave blank to keep current"/>
-      </div>
-    </div>
-    <p style="font-size:.75rem;color:#a60;margin:4px 0 6px">&#9432; OTA hostname and password changes require a device restart to take effect.</p>
-    <label>Fault GCODE <span style="color:#666;font-size:.75rem">(sent to Moonraker via WebSocket on runout)</span></label>
-    <input type="text" id="fault-gcode" maxlength="63" placeholder="PAUSE"/>
-    <div class="toggle-row">
-      <input type="checkbox" id="sensor-en"/>
-      <label for="sensor-en">Enable fault trigger sensor (runout output)</label>
-    </div>
-    <div class="toggle-row">
-      <input type="checkbox" id="disp-en"/>
-      <label for="disp-en">Enable OLED display (SSD1306 128&#x00D7;64)</label>
-    </div>
-    <div class="toggle-row">
-      <input type="checkbox" id="dht-en"/>
-      <label for="dht-en">Enable DHT22 environment sensor (temperature &amp; humidity)</label>
-    </div>
-    <button class="btn-save" onclick="saveConfig()">Save &amp; Apply</button>
-    <button class="btn-reset" onclick="rebootDevice()" style="margin-top:6px">Restart Device</button>
-    <div id="msg"></div>
-  </div>
 
-  <!-- Calibration Card -->
-  <div class="card">
-    <h2>Auto-Calibrate</h2>
-    <p style="font-size:.8rem;color:#aaa;margin-bottom:8px">
-      Extrudes filament and measures encoder ticks to compute the calibration factor.<br>
-      <strong style="color:#fa0">&#9888; Nozzle must be at print temperature. No active print.</strong>
-    </p>
-    <p id="cal-nozzle" style="font-size:.82rem;color:#9ad;margin-bottom:8px">Nozzle: --.- &#176;C / target --.- &#176;C</p>
-    <div class="row">
-      <div>
-        <label>Extrude distance (mm)</label>
-        <input type="number" id="cal-mm" step="1" min="10" max="200" value="50"/>
-      </div>
-      <div>
-        <label>Speed (mm/min)</label>
-        <input type="number" id="cal-speed" step="10" min="60" max="600" value="300"/>
+    <!-- ─── Page: Configuration ───────────────────────────────────────────── -->
+    <div class="page" id="page-config">
+      <div class="card">
+        <h2>Configuration</h2>
+        <div class="row">
+          <div>
+            <label>Calibration factor (mm/tick)</label>
+            <input type="number" id="cal" step="0.001" min="0.001" max="10"/>
+          </div>
+          <div>
+            <label>Fault timeout (ms)</label>
+            <input type="number" id="timeout" step="100" min="500" max="10000"/>
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <label>Min extruder velocity (mm/s)</label>
+            <input type="number" id="min-vel" step="0.1" min="0.1" max="20"/>
+          </div>
+          <div>
+            <label>Motion threshold (ticks)</label>
+            <input type="number" id="thresh" step="1" min="1" max="100"/>
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <label>Moonraker IP / hostname</label>
+            <input type="text" id="mr-ip" maxlength="39"/>
+          </div>
+          <div>
+            <label>Moonraker port</label>
+            <input type="number" id="mr-port" step="1" min="1" max="65535"/>
+          </div>
+        </div>
+        <label>WiFi SSID</label>
+        <input type="text" id="wifi-ssid" maxlength="63"/>
+        <label>WiFi Password</label>
+        <input type="text" id="wifi-pass" maxlength="63" placeholder="leave blank to keep current"/>
+        <div class="row">
+          <div>
+            <label>OTA hostname (.local)</label>
+            <input type="text" id="ota-host" maxlength="31" placeholder="filament-sensor"/>
+          </div>
+          <div>
+            <label>OTA push password</label>
+            <input type="password" id="ota-pass" maxlength="31" placeholder="leave blank to keep current"/>
+          </div>
+        </div>
+        <p style="font-size:.75rem;color:#a60;margin:4px 0 6px">&#9432; OTA hostname and password changes require a device restart to take effect.</p>
+        <label>Fault GCODE <span style="color:#666;font-size:.75rem">(sent to Moonraker via WebSocket on runout)</span></label>
+        <input type="text" id="fault-gcode" maxlength="63" placeholder="PAUSE"/>
+        <div class="toggle-row">
+          <input type="checkbox" id="sensor-en"/>
+          <label for="sensor-en">Enable fault trigger sensor (runout output)</label>
+        </div>
+        <div class="toggle-row">
+          <input type="checkbox" id="disp-en"/>
+          <label for="disp-en">Enable OLED display (SSD1306 128&#x00D7;64)</label>
+        </div>
+        <div class="toggle-row">
+          <input type="checkbox" id="dht-en"/>
+          <label for="dht-en">Enable DHT22 environment sensor (temperature &amp; humidity)</label>
+        </div>
+        <button class="btn-save" onclick="saveConfig()">Save &amp; Apply</button>
+        <button class="btn-reset" onclick="rebootDevice()" style="margin-top:6px">Restart Device</button>
+        <div id="msg"></div>
       </div>
     </div>
-    <button class="btn-save" id="btn-cal" onclick="startCal()">Start Calibration</button>
-    <div id="cal-status" style="font-size:.85rem;margin-top:8px;min-height:1.4em;color:#aaa"></div>
-  </div>
 
-  <!-- Pin Configuration Card -->
-  <div class="card">
-    <h2>Pin Configuration</h2>
-    <p style="font-size:.8rem;color:#aaa;margin-bottom:8px">
-      Change GPIO pin assignments. New assignments are stored in NVS and take
-      effect after the device reboots automatically.<br>
-      <strong style="color:#fa0">&#9888; GPIO 34–39 are input-only; do not assign the runout pin there.
-      GPIO 6–11 are reserved for SPI flash.</strong>
-    </p>
-    <div class="row">
-      <div>
-        <label>Encoder Ch-A pin</label>
-        <input type="number" id="pin-enc-a" step="1" min="0" max="39"/>
+    <!-- ─── Page: Calibration & Update ───────────────────────────────────── -->
+    <div class="page" id="page-calib">
+      <!-- Auto-Calibrate card -->
+      <div class="card">
+        <h2>Auto-Calibrate</h2>
+        <p style="font-size:.8rem;color:#aaa;margin-bottom:8px">
+          Extrudes filament and measures encoder ticks to compute the calibration factor.<br>
+          <strong style="color:#fa0">&#9888; Nozzle must be at print temperature. No active print.</strong>
+        </p>
+        <p id="cal-nozzle" style="font-size:.82rem;color:#9ad;margin-bottom:8px">Nozzle: --.- &#176;C / target --.- &#176;C</p>
+        <div class="row">
+          <div>
+            <label>Extrude distance (mm)</label>
+            <input type="number" id="cal-mm" step="1" min="10" max="200" value="50"/>
+          </div>
+          <div>
+            <label>Speed (mm/min)</label>
+            <input type="number" id="cal-speed" step="10" min="60" max="600" value="300"/>
+          </div>
+        </div>
+        <button class="btn-save" id="btn-cal" onclick="startCal()">Start Calibration</button>
+        <div id="cal-status" style="font-size:.85rem;margin-top:8px;min-height:1.4em;color:#aaa"></div>
       </div>
-      <div>
-        <label>Encoder Ch-B pin</label>
-        <input type="number" id="pin-enc-b" step="1" min="0" max="39"/>
-      </div>
-    </div>
-    <div class="row">
-      <div>
-        <label>Encoder button pin</label>
-        <input type="number" id="pin-enc-btn" step="1" min="0" max="39"/>
-      </div>
-      <div>
-        <label>Runout output pin</label>
-        <input type="number" id="pin-runout" step="1" min="0" max="33"/>
-      </div>
-    </div>
-    <div class="row" id="pin-dht-row">
-      <div>
-        <label>DHT22 data pin</label>
-        <input type="number" id="pin-dht" step="1" min="0" max="39"/>
-      </div>
-      <div></div>
-    </div>
-    <button class="btn-save" onclick="savePins()">Save &amp; Reboot</button>
-    <div id="pin-msg" style="font-size:.8rem;text-align:center;margin-top:6px;min-height:1.2em;color:#0f0"></div>
-  </div>
 
-  <!-- OTA Update Card -->
-  <div class="card">
-    <h2>Firmware Update</h2>
-    <table>
-      <tr><td>Installed version</td><td id="ota-ver">-</td></tr>
-      <tr><td>UI version (LittleFS)</td><td id="ota-ui-ver">-</td></tr>
-      <tr><td>Latest release</td>   <td id="ota-latest">-</td></tr>
-      <tr><td>Status</td>           <td id="ota-status">-</td></tr>
-    </table>
-    <div id="ota-error" style="font-size:.8rem;color:#f66;margin-top:6px;word-break:break-word;display:none"></div>
-    <button class="btn-save" id="btn-check" onclick="checkForUpdates()" style="margin-top:10px">
-      Check for Updates
-    </button>
-    <button class="btn-reset" id="btn-apply" onclick="applyUpdate()" style="margin-top:6px;display:none">
-      Apply Update
-    </button>
-    <button class="btn-save" id="btn-update-ui" onclick="updateUiOnly()" style="margin-top:6px;display:none">
-      Update UI
-    </button>
-  </div>
+      <!-- Firmware & UI Update card -->
+      <div class="card">
+        <h2>Firmware &amp; UI Update</h2>
+        <table>
+          <tr><td>Installed version</td><td id="ota-ver">-</td></tr>
+          <tr><td>UI version (LittleFS)</td><td id="ota-ui-ver">-</td></tr>
+          <tr><td>Latest release</td>   <td id="ota-latest">-</td></tr>
+          <tr><td>Status</td>           <td id="ota-status">-</td></tr>
+        </table>
+        <div id="ota-error" style="font-size:.8rem;color:#f66;margin-top:6px;word-break:break-word;display:none"></div>
+        <button class="btn-save" id="btn-check" onclick="checkForUpdates()" style="margin-top:10px">
+          Check for Updates
+        </button>
+        <button class="btn-reset" id="btn-apply" onclick="applyUpdate()" style="margin-top:6px;display:none">
+          Apply Update
+        </button>
+        <button class="btn-save" id="btn-update-ui" onclick="updateUiOnly()" style="margin-top:6px;display:none">
+          Update UI
+        </button>
+      </div>
+    </div>
 
-  <!-- Diagnostics Card -->
-  <div class="card">
-    <h2>Diagnostics</h2>
-    <table>
-      <tr><td>Uptime</td><td id="diag-uptime">-</td></tr>
-      <tr><td>Heap free / min</td><td id="diag-heap">-</td></tr>
-      <tr><td>WiFi disconnect reason</td><td id="diag-disc">-</td></tr>
-      <tr><td>MR ws init/conn/sub</td><td id="diag-mr-state">-</td></tr>
-      <tr><td>MR stale / age</td><td id="diag-mr-age">-</td></tr>
-      <tr><td>MR target</td><td id="diag-mr-target">-</td></tr>
-      <tr><td>MR last connect</td><td id="diag-mr-last">-</td></tr>
-      <tr><td>MR raw WS probe</td><td id="diag-mr-probe">-</td></tr>
-      <tr><td>MR probe status line</td><td id="diag-mr-probe-line">-</td></tr>
-      <tr><td>MR conn/disc/start</td><td id="diag-mr-evt">-</td></tr>
-      <tr><td>MR info/sub/query</td><td id="diag-mr-req">-</td></tr>
-      <tr><td>MR JSON errors</td><td id="diag-mr-json">-</td></tr>
-    </table>
-    <p style="font-size:.75rem;color:#666;margin:10px 0 3px">Event log</p>
-    <pre id="diag-mr-log" style="font-size:.7rem;background:#0a0a0a;padding:8px;border-radius:4px;white-space:pre-wrap;word-break:break-all;max-height:150px;overflow-y:auto;color:#7c7;margin:0">(no events)</pre>
-  </div>
+    <!-- ─── Page: Diagnostics ─────────────────────────────────────────────── -->
+    <div class="page" id="page-diag">
+      <div class="card">
+        <h2>Diagnostics</h2>
+        <table>
+          <tr><td>Uptime</td><td id="diag-uptime">-</td></tr>
+          <tr><td>Heap free / min</td><td id="diag-heap">-</td></tr>
+          <tr><td>WiFi disconnect reason</td><td id="diag-disc">-</td></tr>
+          <tr><td>MR ws init/conn/sub</td><td id="diag-mr-state">-</td></tr>
+          <tr><td>MR stale / age</td><td id="diag-mr-age">-</td></tr>
+          <tr><td>MR target</td><td id="diag-mr-target">-</td></tr>
+          <tr><td>MR last connect</td><td id="diag-mr-last">-</td></tr>
+          <tr><td>MR raw WS probe</td><td id="diag-mr-probe">-</td></tr>
+          <tr><td>MR probe status line</td><td id="diag-mr-probe-line">-</td></tr>
+          <tr><td>MR conn/disc/start</td><td id="diag-mr-evt">-</td></tr>
+          <tr><td>MR info/sub/query</td><td id="diag-mr-req">-</td></tr>
+          <tr><td>MR JSON errors</td><td id="diag-mr-json">-</td></tr>
+        </table>
+        <p style="font-size:.75rem;color:#666;margin:10px 0 3px">Event log</p>
+        <pre id="diag-mr-log" style="font-size:.7rem;background:#0a0a0a;padding:8px;border-radius:4px;white-space:pre-wrap;word-break:break-all;max-height:150px;overflow-y:auto;color:#7c7;margin:0">(no events)</pre>
+      </div>
+    </div>
+
+    <!-- ─── Page: Pin Configuration ───────────────────────────────────────── -->
+    <div class="page" id="page-pins">
+      <div class="card">
+        <h2>Pin Configuration</h2>
+        <p style="font-size:.8rem;color:#aaa;margin-bottom:8px">
+          Change GPIO pin assignments. New assignments are stored in NVS and take
+          effect after the device reboots automatically.<br>
+          <strong style="color:#fa0">&#9888; GPIO 34–39 are input-only; do not assign the runout pin there.
+          GPIO 6–11 are reserved for SPI flash.</strong>
+        </p>
+        <div class="row">
+          <div>
+            <label>Encoder Ch-A pin</label>
+            <input type="number" id="pin-enc-a" step="1" min="0" max="39"/>
+          </div>
+          <div>
+            <label>Encoder Ch-B pin</label>
+            <input type="number" id="pin-enc-b" step="1" min="0" max="39"/>
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <label>Encoder button pin</label>
+            <input type="number" id="pin-enc-btn" step="1" min="0" max="39"/>
+          </div>
+          <div>
+            <label>Runout output pin</label>
+            <input type="number" id="pin-runout" step="1" min="0" max="33"/>
+          </div>
+        </div>
+        <div class="row" id="pin-dht-row">
+          <div>
+            <label>DHT22 data pin</label>
+            <input type="number" id="pin-dht" step="1" min="0" max="39"/>
+          </div>
+          <div></div>
+        </div>
+        <button class="btn-save" onclick="savePins()">Save &amp; Reboot</button>
+        <div id="pin-msg" style="font-size:.8rem;text-align:center;margin-top:6px;min-height:1.2em;color:#0f0"></div>
+      </div>
+    </div>
+  </main>
 
   <script>
-    const UI_VERSION = "1.1.4"; // bumped automatically by release.yml on each GitHub release
+    const UI_VERSION = "1.2.0"; // bumped automatically by release.yml on each GitHub release
     let maxVel = 10;
 
+    // ─── Navigation ──────────────────────────────────────────────────────────────
+    const PAGES = ['status','config','calib','diag','pins'];
+
+    function showPage(name) {
+      PAGES.forEach(p => {
+        document.getElementById('page-'+p).classList.toggle('active', p === name);
+        document.getElementById('tab-'+p).classList.toggle('active', p === name);
+      });
+      if (name === 'config') loadConfig();
+      if (name === 'calib')  loadOta();
+      if (name === 'diag')   refreshDiag();
+      if (name === 'pins')   loadPins();
+    }
+
+    // ─── Status ──────────────────────────────────────────────────────────────────
     function badge(state) {
       const b = document.getElementById('badge');
       b.textContent = state;
@@ -278,20 +411,20 @@
           document.getElementById('mr-link').textContent    = mrText;
           document.getElementById('mr-link').style.color    = (mrText === 'LIVE') ? '#4f4' : ((mrText === 'STALE') ? '#fa0' : '#f66');
           document.getElementById('klippy').textContent     = d.klippy_state;
-          document.getElementById('ticks').textContent     = d.ticks;
+          document.getElementById('ticks').textContent      = d.ticks;
           const dirs = {'-1':'◀ Reverse','0':'● Stopped','1':'▶ Forward'};
-          document.getElementById('dir').textContent       = dirs[String(d.direction)] ?? d.direction;
-          document.getElementById('motion-ago').textContent= d.motion_ago_ms + ' ms ago';
-          document.getElementById('fault').textContent     = d.fault ? '⚠ YES' : 'No';
-          document.getElementById('fault').style.color     = d.fault ? '#f44' : '#4f4';
-          document.getElementById('ip').textContent        = d.ip;
-          const noz = d.nozzle_temp ?? 0;
+          document.getElementById('dir').textContent        = dirs[String(d.direction)] ?? d.direction;
+          document.getElementById('motion-ago').textContent = d.motion_ago_ms + ' ms ago';
+          document.getElementById('fault').textContent      = d.fault ? '⚠ YES' : 'No';
+          document.getElementById('fault').style.color      = d.fault ? '#f44' : '#4f4';
+          document.getElementById('ip').textContent         = d.ip;
+          const noz       = d.nozzle_temp ?? 0;
           const nozTarget = d.nozzle_target ?? 0;
           const calNozzle = document.getElementById('cal-nozzle');
           calNozzle.textContent = 'Nozzle: ' + noz.toFixed(1) + ' °C / target ' + nozTarget.toFixed(1) + ' °C';
           calNozzle.style.color = (nozTarget > 0 && noz >= nozTarget - 5.0) ? '#4f4' : '#9ad';
           // DHT22 temperature + humidity
-          const dhtValid = d.dht_valid ?? false;
+          const dhtValid  = d.dht_valid ?? false;
           const dhtTempEl = document.getElementById('dht-temp');
           const dhtHumEl  = document.getElementById('dht-hum');
           if (dhtValid) {
@@ -306,26 +439,27 @@
             dhtHumEl.style.color  = '#666';
           }
           const pct = Math.min(100, Math.abs(d.enc_vel) / maxVel * 100);
-          document.getElementById('vel-bar').style.width   = pct + '%';
+          document.getElementById('vel-bar').style.width = pct + '%';
         }).catch(()=>{});
     }
 
+    // ─── Configuration ───────────────────────────────────────────────────────────
     function loadConfig() {
       fetch('/api/config')
         .then(r=>r.json())
         .then(d=>{
-          document.getElementById('cal').value        = d.cal_factor;
-          document.getElementById('timeout').value    = d.timeout_ms;
-          document.getElementById('min-vel').value    = d.min_ext_vel;
-          document.getElementById('thresh').value     = d.motion_threshold;
-          document.getElementById('mr-ip').value      = d.moonraker_ip;
-          document.getElementById('mr-port').value    = d.moonraker_port;
-          document.getElementById('wifi-ssid').value  = d.wifi_ssid;
-          document.getElementById('ota-host').value   = d.ota_hostname;
-          document.getElementById('sensor-en').checked = (d.sensor_enabled !== false);
-          document.getElementById('disp-en').checked  = d.display_enabled;
-          document.getElementById('dht-en').checked   = (d.dht_enabled !== false);
-          document.getElementById('fault-gcode').value = d.fault_gcode || 'PAUSE';
+          document.getElementById('cal').value          = d.cal_factor;
+          document.getElementById('timeout').value      = d.timeout_ms;
+          document.getElementById('min-vel').value      = d.min_ext_vel;
+          document.getElementById('thresh').value       = d.motion_threshold;
+          document.getElementById('mr-ip').value        = d.moonraker_ip;
+          document.getElementById('mr-port').value      = d.moonraker_port;
+          document.getElementById('wifi-ssid').value    = d.wifi_ssid;
+          document.getElementById('ota-host').value     = d.ota_hostname;
+          document.getElementById('sensor-en').checked  = (d.sensor_enabled !== false);
+          document.getElementById('disp-en').checked    = d.display_enabled;
+          document.getElementById('dht-en').checked     = (d.dht_enabled !== false);
+          document.getElementById('fault-gcode').value  = d.fault_gcode || 'PAUSE';
           maxVel = Math.max(10, d.min_ext_vel * 20);
         }).catch(()=>{});
     }
@@ -369,6 +503,7 @@
         .catch(()=>showMsg('✗ Request failed', false));
     }
 
+    // ─── OTA Update ──────────────────────────────────────────────────────────────
     function loadOta() {
       fetch('/api/ota')
         .then(r=>r.json())
@@ -533,7 +668,7 @@
       setTimeout(()=>{ m.textContent=''; }, 4000);
     }
 
-    // ─── Calibration ───────────────────────────────────────────────────────────────
+    // ─── Calibration ─────────────────────────────────────────────────────────────
     let calPollTimer = null;
 
     function startCal() {
@@ -599,22 +734,23 @@
       document.getElementById('cal-status').style.color = '#4f4';
     }
 
+    // ─── Diagnostics ─────────────────────────────────────────────────────────────
     function refreshDiag() {
       fetch('/api/diag')
         .then(r=>r.json())
         .then(d=>{
-          document.getElementById('diag-uptime').textContent   = d.uptime_s + ' s';
-          document.getElementById('diag-heap').textContent     = d.heap_free + ' / ' + d.heap_min + ' B';
-          document.getElementById('diag-disc').textContent     = d.wifi_disc_reason;
-          document.getElementById('diag-mr-state').textContent = (d.mr_ws_init?1:0) + '/' + (d.mr_ws_conn?1:0) + '/' + (d.mr_sub?1:0) + ' (' + d.klippy_state + ')';
-          document.getElementById('diag-mr-age').textContent   = (d.mr_stale ? 'stale' : 'live') + ' / ' + d.mr_age_ms + ' ms';
+          document.getElementById('diag-uptime').textContent    = d.uptime_s + ' s';
+          document.getElementById('diag-heap').textContent      = d.heap_free + ' / ' + d.heap_min + ' B';
+          document.getElementById('diag-disc').textContent      = d.wifi_disc_reason;
+          document.getElementById('diag-mr-state').textContent  = (d.mr_ws_init?1:0) + '/' + (d.mr_ws_conn?1:0) + '/' + (d.mr_sub?1:0) + ' (' + d.klippy_state + ')';
+          document.getElementById('diag-mr-age').textContent    = (d.mr_stale ? 'stale' : 'live') + ' / ' + d.mr_age_ms + ' ms';
           document.getElementById('diag-mr-target').textContent = (d.mr_last_host || '-') + ':' + d.mr_last_port;
           document.getElementById('diag-mr-last').textContent   = (d.mr_last_ok ? 'ok' : 'failed') + ' / fails=' + d.mr_fail_streak + ' / backoff=' + d.mr_backoff_ms + ' ms';
           document.getElementById('diag-mr-probe').textContent  = (d.mr_probe_last_ok ? '101-ok' : 'not-101') + ' / ' + d.mr_probe_101 + '/' + d.mr_probe_attempts;
           document.getElementById('diag-mr-probe-line').textContent = d.mr_probe_status_line || '-';
-          document.getElementById('diag-mr-evt').textContent   = d.mr_conn_evt + '/' + d.mr_disc_evt + '/' + d.mr_start_evt;
-          document.getElementById('diag-mr-req').textContent   = d.mr_info_req + '/' + d.mr_sub_req + '/' + d.mr_query_req;
-          document.getElementById('diag-mr-json').textContent  = d.mr_json_err;
+          document.getElementById('diag-mr-evt').textContent    = d.mr_conn_evt + '/' + d.mr_disc_evt + '/' + d.mr_start_evt;
+          document.getElementById('diag-mr-req').textContent    = d.mr_info_req + '/' + d.mr_sub_req + '/' + d.mr_query_req;
+          document.getElementById('diag-mr-json').textContent   = d.mr_json_err;
           if (d.mr_log !== undefined) document.getElementById('diag-mr-log').textContent = d.mr_log;
         }).catch(()=>{});
     }
@@ -673,7 +809,6 @@
 
     loadConfig();
     loadOta();
-    loadPins();
     refresh();
     refreshDiag();
     setInterval(refresh, 1000);
