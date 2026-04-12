@@ -18,6 +18,7 @@
 | 8 | USB-C / Micro-USB cable | Power / programming | 1 | Matches ESP32 board variant |
 | 9 | 3-pin dupont cable | Runout signal wiring | 1 | GPIO 27, GND, and optional 3.3 V |
 | 10 | **OLED display** (optional) | **SSD1306 128×64 I²C** (0.96″, GND/VCC/SCL/SDA) | 1 | Shows live state, velocities, tick count, IP |
+| 11 | **DHT22 sensor** (optional) | **AM2302 / DHT22** temperature + humidity module | 1 | Monitors ambient conditions; data exposed via `/api/status` and web UI |
 
 ---
 
@@ -28,10 +29,11 @@
 | **25** | Input | Encoder Channel A (ChA) | Pull-up enabled; interrupt on CHANGE |
 | **26** | Input | Encoder Channel B (ChB) | Pull-up enabled; interrupt on CHANGE |
 | **27** | Output | Klipper runout signal | **Active LOW**; idle = HIGH, fault = LOW |
+| **4** | Input | DHT22 data (optional) | Single-wire 1-Wire-like protocol; compile-time default; runtime configurable |
 | **21** | I²C SDA | OLED display data | Default ESP32 hardware I²C SDA (optional) |
 | **22** | I²C SCL | OLED display clock | Default ESP32 hardware I²C SCL (optional) |
 
-> **All encoder and runout pins are configurable** at compile-time in `firmware/src/config.h`.
+> **All encoder, runout, and DHT22 pins are configurable** at compile-time in `firmware/src/config.h`.
 > OLED pins default to the ESP32's hardware I²C port (GPIO 21/22) but can be
 > changed via `OLED_SDA_PIN` / `OLED_SCL_PIN` in `config.h`.
 
@@ -110,7 +112,62 @@ SSD1306 OLED         ESP32 Dev Board
 
 ---
 
-## 5. Runout Signal Wiring to Klipper Host
+## 5. DHT22 Environment Sensor Wiring (Optional)
+
+The firmware supports a **DHT22 (AM2302)** temperature and humidity sensor that
+monitors ambient conditions around the printer enclosure.  DHT22 support is
+compiled in by default; to exclude it pass `-DDISABLE_DHT` in `build_flags` or
+comment out `#define ENABLE_DHT` in `config.h`.
+
+### Wiring
+
+```
+DHT22 module          ESP32 Dev Board
+────────────          ──────────────
+  VCC  ─────────────── 3.3V   (or 5V if your module has an onboard regulator)
+  GND  ─────────────── GND
+  DATA ─────────────── GPIO 4  (compile-time default; runtime configurable)
+```
+
+Most DHT22 breakout modules include a pull-up resistor on the data line.  If
+yours is a bare sensor (no PCB), add a **10 kΩ pull-up** from DATA to 3.3 V.
+
+> **Note**: DHT22 requires a minimum of 2 s between readings.  The firmware
+> enforces this with `DHT_READ_INTERVAL_MS = 3000` (3 s).  Do not reduce this
+> below 2000 ms.
+
+### Changing the DHT22 GPIO pin
+
+The default data pin is **GPIO 4**.  To change it:
+
+- **Compile-time**: edit `DHT_PIN` in `firmware/src/config.h` and reflash.
+- **Runtime (no reflash)**: open `http://<sensor-ip>` → **Pin Configuration**
+  → **DHT22 data** field → enter the new GPIO number → **Save & Reboot**.
+
+### Enabling / disabling at runtime
+
+Open the web UI, scroll to **Configuration**, toggle **Enable DHT22 sensor**,
+and click **Save & Apply**.  When disabled the sensor hardware is not polled
+and `dht_temp` / `dht_humidity` are omitted from `/api/status` responses.
+
+### What is reported
+
+| Field | Endpoint | Description |
+|-------|----------|-------------|
+| `dht_temp` | `/api/status`, `/api/dht` | Ambient temperature (°C) |
+| `dht_humidity` | `/api/status`, `/api/dht` | Relative humidity (%RH) |
+| `dht_valid` | `/api/status`, `/api/dht` | `true` when last read succeeded |
+
+Query directly:
+
+```bash
+curl http://<sensor-ip>/api/dht
+# {"enabled":true,"valid":true,"temp":23.4,"humidity":45.2}
+```
+
+---
+
+## 6. Runout Signal Wiring to Klipper Host
 
 ```
 ESP32 GPIO 27  ──────────────── Klipper host GPIO (filament sensor pin)
@@ -131,7 +188,7 @@ ESP32 GPIO 27 (e.g., `gpio21`).
 
 ---
 
-## 6. Schematic (Simplified)
+## 7. Schematic (Simplified)
 
 ```
  Encoder ChA ───────────────── GPIO 25  [~45 kΩ internal pull-up to 3.3V]
@@ -139,15 +196,19 @@ ESP32 GPIO 27 (e.g., `gpio21`).
  Encoder VCC ───────────────── 3.3V
  Encoder GND ───────────────── GND
 
+ DHT22 DATA  ───────────────── GPIO 4   [10 kΩ pull-up to 3.3V; usually on breakout]
+ DHT22 VCC   ───────────────── 3.3V (or 5V with onboard regulator)
+ DHT22 GND   ───────────────── GND
+
  GPIO 27 ──────────────────────────────── Klipper runout pin
  GND    ───────────────────────────────── Klipper GND
 ```
 
-> External pull-up resistors (10 kΩ to 3.3 V) are optional and only needed for cable runs > ~30 cm.
+> External pull-up resistors (10 kΩ to 3.3 V) are optional for the encoder and only needed for cable runs > ~30 cm.
 
 ---
 
-## 7. Mechanical Mounting
+## 8. Mechanical Mounting
 
 - The encoder sensing wheel must contact the filament with light, consistent pressure.
 - A printed guide body with an adjustable spring-loaded arm is recommended.
@@ -156,20 +217,21 @@ ESP32 GPIO 27 (e.g., `gpio21`).
 
 ---
 
-## 8. Power Supply
+## 9. Power Supply
 
 | Supply | Voltage | Current (typical) |
 |--------|---------|------------------|
 | ESP32 via USB | 5 V | < 250 mA |
 | Encoder module | 3.3 V from ESP32 | < 20 mA |
 | OLED display (SSD1306) | 3.3 V from ESP32 | < 20 mA (typical ~10 mA) |
+| DHT22 sensor | 3.3 V from ESP32 | < 2.5 mA |
 | Total | 5 V USB | < 300 mA |
 
 A standard 5 V / 0.5 A USB charger or the printer's USB port is sufficient.
 
 ---
 
-## 9. Environmental Ratings
+## 10. Environmental Ratings
 
 | Parameter | Value |
 |-----------|-------|

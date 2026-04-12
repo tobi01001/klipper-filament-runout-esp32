@@ -21,8 +21,10 @@ via a Moonraker API poll and a direct runout GPIO signal.
 | **Quadrature Gray-code decoder** | ISR latency < 5 µs; direction + velocity |
 | **EMA velocity filter** | Smooth 50 Hz speed estimate (α = 0.3) |
 | **Moonraker integration** | WebSocket subscribe/notify of extruder velocity |
+| **Fault G-code** | Sends a configurable G-code command (default `PAUSE`) to Klipper via WebSocket on fault |
 | **Configurable fault timeout** | Default 2 s; adjustable 0.5–10 s |
 | **Physical fault reset** | Press the KY-040 knob to clear a runout fault |
+| **DHT22 environment sensor** (optional) | Monitors ambient temperature (°C) and humidity (%RH); exposed via web UI and `/api/status` |
 | **Web configuration UI** | Mobile-friendly dashboard; no app required |
 | **NVS persistence** | All settings (including GPIO pin assignments) survive power cycles and firmware updates |
 | **WiFi AP fallback** | First-boot or credential-loss → AP mode for setup |
@@ -114,6 +116,14 @@ and open `http://192.168.4.1` to configure your network and Moonraker details.
 | 21 | OLED SDA (optional) | I²C |
 | 22 | OLED SCL (optional) | I²C |
 
+### DHT22 Environment Sensor → ESP32 (optional)
+
+| DHT22 Pin | ESP32 GPIO | Signal | Notes |
+|----------|-----------|--------|-------|
+| GND | GND | Ground | |
+| VCC | 3.3 V | Power | Most breakout modules accept 3.3–5 V |
+| DATA | 4 | Data | 10 kΩ pull-up included on most breakout modules |
+
 All pins are configurable in `firmware/src/config.h` (compile-time defaults) or
 at runtime via the web interface — see [Runtime Pin Configuration](#-runtime-pin-configuration) below.
 
@@ -140,7 +150,7 @@ After the reboot the new pin assignments are active and persistent across future
 | Encoder Ch-B | 26 | KY-040 DT — input, internal pull-up |
 | Encoder button | 32 | KY-040 SW — input; GPIO 32/33 support `INPUT_PULLUP`; 34–39 require external pull-up |
 | Runout output | 27 | Active-LOW to Klipper; must be output-capable (GPIO 0–33) |
-| DHT22 data | 4 | Only shown when DHT22 support is compiled in |
+| DHT22 data | 4 | Single-wire data line; shown only when DHT22 support is compiled in (default: on) |
 
 ### Constraints
 
