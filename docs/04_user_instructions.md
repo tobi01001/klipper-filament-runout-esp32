@@ -368,7 +368,187 @@ G-code:
 
 ---
 
-## Step 5c – Fault G-code Configuration
+## Step 5b – WiFi-only Integration (no `type: http`, no GPIO wire)
+
+If your Moonraker does not support `type: http` **and** you prefer not to run a
+GPIO wire between the ESP32 and the Raspberry Pi, all sensor functions are still
+available over WiFi using standard shell commands.  This is the recommended
+approach for most users on current Moonraker builds.
+
+### How it works
+
+| What you want | How it is delivered |
+|---------------|---------------------|
+| Pause the print when filament runs out | ESP32 sends the configured **fault G-code** (default `PAUSE`) **directly to Klipper** via its Moonraker WebSocket connection the instant a fault is detected — no extra config required |
+| Enable / disable sensor from macros | `FILAMENT_SENSOR_ENABLE` / `FILAMENT_SENSOR_DISABLE` macros call `curl` shell commands |
+| Reset a fault and resume printing | `FILAMENT_SENSOR_RESET` macro calls a `curl` shell command |
+| Read DHT22 ambient temperature + humidity | `READ_AMBIENT_SENSOR` macro queries `/api/dht` and prints the result to the Mainsail console |
+| Check sensor state on demand | `READ_SENSOR_STATUS` macro queries `/api/status` and prints state, fault flag, encoder velocity, and nozzle temperature |
+
+> **Prerequisite**: the ESP32 must have a valid Moonraker IP and port configured
+> (web UI → **Configuration** → Moonraker IP / Port).  The ESP32 opens its own
+> WebSocket to Moonraker on boot; when a fault is detected it sends the fault
+> G-code without any polling or extra setup on the Klipper side.
+
+---
+
+### Prerequisites
+
+| Item | Notes |
+|------|-------|
+| `curl` on the Klipper host | `sudo apt install curl` |
+| `gcode_shell_command.py` | Install via KIAUH *Advanced → Install gcode shell command*, or manually (see Option B above) |
+
+---
+
+### 1. moonraker.conf
+
+Add the shell commands from `klipper/moonraker.conf` (sections 2 and 3) to your
+`moonraker.conf`, replacing `<ESP32_IP>` with the sensor's IP address:
+
+```ini
+# ── Sensor control (already in section 2) ──────────────────────────────────
+[shell_command filament_sensor_enable]
+command: curl -s -X POST -H "Content-Type: application/json" -d '{"enabled":true,"persist":false}' http://192.168.1.42/api/sensor
+timeout: 5.0
+verbose: False
+
+[shell_command filament_sensor_disable]
+command: curl -s -X POST -H "Content-Type: application/json" -d '{"enabled":false,"persist":false}' http://192.168.1.42/api/sensor
+timeout: 5.0
+verbose: False
+
+[shell_command filament_sensor_reset]
+command: curl -s -X POST http://192.168.1.42/api/reset
+timeout: 5.0
+verbose: False
+
+# ── Sensor monitoring (section 3) ──────────────────────────────────────────
+# Reads DHT22 temperature + humidity; verbose:True prints to G-code console
+[shell_command read_dht_sensor]
+command: bash -c "curl -sf --max-time 3 http://192.168.1.42/api/dht | python3 -c \"import json,sys; d=json.load(sys.stdin); print('Ambient: ' + str(round(d['temp'],1)) + '\u00b0C  ' + str(round(d['humidity'],1)) + '%RH') if d.get('valid') else print('DHT22: no valid reading (check wiring and pin config)')\""
+timeout: 8.0
+verbose: True
+
+# Reads full sensor status (state, fault, encoder velocity, nozzle temperature)
+[shell_command read_sensor_status]
+command: bash -c "curl -sf --max-time 3 http://192.168.1.42/api/status | python3 -c \"import json,sys; s=json.load(sys.stdin); print('Sensor: state=' + s.get('state','?') + '  fault=' + str(s.get('fault',False)) + '  enc=' + str(round(s.get('enc_vel',0),2)) + 'mm/s  nozzle=' + str(round(s.get('nozzle_temp',0),1)) + '\u00b0C')\""
+timeout: 8.0
+verbose: True
+```
+
+---
+
+### 2. printer.cfg macros
+
+Add the macros from `klipper/printer.cfg` to your `printer.cfg`:
+
+```ini
+# ── Sensor arm / disarm / reset ────────────────────────────────────────────
+[gcode_macro FILAMENT_SENSOR_ENABLE]
+description: Enable the ESP32 filament runout sensor
+gcode:
+    RUN_SHELL_COMMAND CMD=filament_sensor_enable
+    M118 ESP32 filament sensor: ENABLED
+
+[gcode_macro FILAMENT_SENSOR_DISABLE]
+description: Disable the ESP32 filament runout sensor
+gcode:
+    RUN_SHELL_COMMAND CMD=filament_sensor_disable
+    M118 ESP32 filament sensor: DISABLED
+
+[gcode_macro FILAMENT_SENSOR_RESET]
+description: Reset an active filament fault on the ESP32 sensor
+gcode:
+    RUN_SHELL_COMMAND CMD=filament_sensor_reset
+    M118 ESP32 filament sensor: fault RESET
+
+# ── Ambient sensor monitoring ───────────────────────────────────────────────
+[gcode_macro READ_AMBIENT_SENSOR]
+description: Print DHT22 temperature and humidity to the G-code console
+gcode:
+    RUN_SHELL_COMMAND CMD=read_dht_sensor
+
+[gcode_macro READ_SENSOR_STATUS]
+description: Print ESP32 sensor state, fault flag, and velocities to the console
+gcode:
+    RUN_SHELL_COMMAND CMD=read_sensor_status
+```
+
+Restart Klipper and Moonraker:
+
+```bash
+sudo systemctl restart klipper moonraker
+```
+
+---
+
+### 3. PRINT_START / PRINT_END integration
+
+```ini
+# [gcode_macro PRINT_START]
+# gcode:
+#     # … your existing PRINT_START gcode …
+#     FILAMENT_SENSOR_RESET    # clear any leftover fault from a previous print
+#     FILAMENT_SENSOR_ENABLE   # arm the ESP32 sensor (WiFi command, no wiring)
+#     READ_AMBIENT_SENSOR      # log ambient temperature + humidity to console
+
+# [gcode_macro PRINT_END]
+# gcode:
+#     # … your existing PRINT_END gcode …
+#     FILAMENT_SENSOR_DISABLE  # disarm sensor while idle
+```
+
+---
+
+### 4. Runout fault behaviour (WiFi-only)
+
+When the ESP32 detects a runout:
+
+1. The ESP32 sends the configured **fault G-code** (`PAUSE` by default) directly
+   to Klipper via the Moonraker WebSocket.  The print pauses **without** any
+   polling delay — response time is the same as Option A.
+2. GPIO 27 pulls LOW at the same instant (hardware fallback).
+3. The Mainsail dashboard shows the sensor state as `FAULT`.
+
+To resume after fixing the filament:
+
+```gcode
+FILAMENT_SENSOR_RESET   ; clears FAULT state on the ESP32
+RESUME                  ; resume the paused print
+```
+
+Or use the **Reset Fault** button in the ESP32 web UI (`http://<sensor-ip>`).
+
+---
+
+### 5. DHT22 data in the console
+
+Call `READ_AMBIENT_SENSOR` (or `READ_SENSOR_STATUS`) from a macro or the
+Mainsail console.  Because the shell commands use `verbose: True`, the output
+appears directly in the Mainsail / Fluidd G-code console:
+
+```
+// Ambient: 23.4°C  45.2%RH
+// Sensor: state=PRINTING  fault=False  enc=3.47mm/s  nozzle=215.0°C
+```
+
+The data can also be queried at any time with `curl` directly:
+
+```bash
+curl http://<sensor-ip>/api/dht
+# {"enabled":true,"valid":true,"temp":23.4,"humidity":45.2}
+
+curl http://<sensor-ip>/api/status
+# {"state":"PRINTING","fault":false,"enc_vel":3.47,"nozzle_temp":215.0,...}
+```
+
+> **DHT22 not in the Sensors panel?**  The Mainsail Sensors panel is populated
+> only by Moonraker's `[sensor]` block.  Without `type: http` support, the DHT22
+> readings are available in the console (via `READ_AMBIENT_SENSOR`) and the ESP32
+> web UI, but not as a Mainsail chart/history entry.
+
+---
 
 When the ESP32 detects a fault it sends a configurable G-code command **directly
 to Klipper** via its Moonraker WebSocket connection.  This works regardless of
