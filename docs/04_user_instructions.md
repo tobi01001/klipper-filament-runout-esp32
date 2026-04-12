@@ -61,6 +61,62 @@ uncheck **Enable OLED display**, and click **Save & Apply**.
 
 ---
 
+## Step 1b – DHT22 Environment Sensor Setup (Optional)
+
+The **DHT22 (AM2302)** sensor adds ambient temperature and humidity monitoring.
+It connects directly to the ESP32 with three wires and requires no additional
+components if you use a breakout module (which includes the pull-up resistor).
+
+| DHT22 module pin | ESP32 pin | Notes |
+|-----------------|-----------|-------|
+| GND | GND | Common ground |
+| VCC | 3.3 V | Most breakout modules accept 3.3–5 V |
+| DATA | GPIO 4 | Default; runtime configurable without reflashing |
+
+> If you are using a **bare DHT22 sensor** (no PCB breakout), add a
+> **10 kΩ pull-up resistor** from the DATA pin to 3.3 V.
+
+### Enabling / disabling DHT22 support
+
+DHT22 support is **compiled in by default**.
+
+- **Enable at runtime** (no reflash): web UI → **Configuration** →
+  toggle **Enable DHT22 sensor** → **Save & Apply**.
+- **Disable at compile time** (removes all DHT22 code, saves ~15 kB flash):
+  add `-DDISABLE_DHT` to `build_flags` in `platformio.ini`.
+
+### Changing the DHT22 data pin
+
+The default data pin is **GPIO 4**.  To use a different pin:
+
+1. Open `http://<sensor-ip>` in your browser.
+2. Scroll to the **Pin Configuration** card.
+3. Change the **DHT22 data** field.
+4. Click **Save & Reboot** – the new assignment is saved to NVS and
+   survives subsequent reboots.
+
+### Reading DHT22 data
+
+Once wired and enabled, DHT22 readings appear in:
+
+| Location | How to access |
+|----------|---------------|
+| Web UI | Live values on the dashboard |
+| REST API | `GET http://<sensor-ip>/api/status` → fields `dht_temp`, `dht_humidity`, `dht_valid` |
+| REST API (DHT only) | `GET http://<sensor-ip>/api/dht` → `{"enabled":true,"valid":true,"temp":23.4,"humidity":45.2}` |
+
+Serial log (DEBUG_LOG_ENABLED build):
+
+```
+[DHT] DHT22 initialised on GPIO 4
+[DHT] T=23.4°C H=45.2%
+```
+
+If `dht_valid` is `false` in the API response, check wiring and confirm
+the data pin matches the runtime or compile-time pin configuration.
+
+---
+
 ## Step 2 – First-Boot WiFi Setup (AP Mode)
 
 On first boot the ESP32 has no saved WiFi credentials and starts in
@@ -156,16 +212,42 @@ Verify in Mainsail / Fluidd that the **filament_runout** sensor shows as
 
 ### Option B – Moonraker HTTP Sensor (no wiring required)
 
-This option uses the ESP32's existing Wi-Fi connection.  Moonraker polls
-`/api/status` asynchronously (non-blocking – the print is never delayed).
-Sensor data appears in the Mainsail **Sensors** panel and can be queried via
-the Moonraker REST API.
+This option uses the ESP32's existing Wi-Fi connection.  When it works, sensor
+data appears in the Mainsail **Sensors** panel and can be queried via the
+Moonraker REST API.
 
-#### Prerequisites
+> **⚠️ Moonraker compatibility warning**
+>
+> The `type: http` sensor type in `[sensor]` is **not supported** by most
+> current Moonraker installations.  If you see any of these warnings in your
+> Moonraker log after adding the sensor block, `type: http` is not available
+> on your Moonraker build:
+>
+> ```
+> Failed to configure sensor [sensor esp32_filament_runout]
+> Unsupported sensor type: http
+>
+> Unparsed config option 'url: http://...' detected in section [sensor esp32_filament_runout]
+> Unparsed config option 'timeout: 3.0' detected ...
+> Unparsed config option 'poll_rate: 5.0' detected ...
+> ```
+>
+> **If you see those warnings:**
+> - Remove or comment out the entire `[sensor esp32_filament_runout]` section
+>   from `moonraker.conf` to stop the warnings.
+> - Fault detection and pause-on-runout still work fully via:
+>   - **Option A** (GPIO wire) – see above.
+>   - **Fault G-code** – the ESP32 sends a configurable G-code command directly
+>     to Klipper via the Moonraker WebSocket the moment a fault is detected
+>     (see [Step 5c – Fault G-code](#step-5c--fault-gcode-configuration) below).
+> - DHT22 temperature and humidity data can still be read directly from the
+>   ESP32 web UI or REST API (`GET http://<sensor-ip>/api/dht`).
+
+#### Prerequisites (Option B, when `type: http` IS supported)
 
 | Item | Notes |
 |------|-------|
-| Moonraker ≥ 0.9.3 | HTTP sensor type |
+| Moonraker that supports `type: http` | Check by adding the block; if no warnings appear it is supported |
 | `curl` on the Klipper host | `sudo apt install curl` |
 | `gcode_shell_command.py` | Install via KIAUH *Advanced → Install gcode shell command*, or see below |
 
@@ -180,37 +262,48 @@ sudo systemctl restart klipper
 #### 1. moonraker.conf
 
 Copy the contents of `klipper/moonraker.conf` from this repository into your
-`moonraker.conf`, replacing `<ESP32_IP>` with the sensor's IP address:
+`moonraker.conf`, replacing `<ESP32_IP>` with the sensor's IP address.
+
+The `[sensor esp32_filament_runout]` block is commented out by default in the
+shipped `klipper/moonraker.conf` because of the compatibility issue above.
+Uncomment it only if your Moonraker does not show the warnings listed above:
 
 ```ini
-[sensor esp32_filament_runout]
-type: http
-url: http://192.168.1.42/api/status   # ← your ESP32 IP
-timeout: 3.0
-poll_rate: 5.0
+# Uncomment if your Moonraker supports type: http (no warnings appear)
+# [sensor esp32_filament_runout]
+# type: http
+# url: http://192.168.1.42/api/status   # ← your ESP32 IP
+# timeout: 3.0
+# poll_rate: 5.0
+#
+# parameter_sensor_enabled:
+#     units: bool
+# parameter_fault:
+#     units: bool
+#     history_field: filament_fault
+# parameter_enc_vel:
+#     units: mm/s
+#     history_field: encoder_velocity
+# parameter_ext_vel:
+#     units: mm/s
+#     history_field: extruder_velocity
+# parameter_motion_ago_ms:
+#     units: ms
+# parameter_nozzle_temp:
+#     units: °C
+#     history_field: nozzle_temperature
+# parameter_dht_temp:
+#     units: °C
+#     history_field: ambient_temperature
+# parameter_dht_humidity:
+#     units: %RH
+#     history_field: ambient_humidity
+```
 
-parameter_sensor_enabled:
-    units: bool
+The `[shell_command]` blocks (enable/disable/reset) do **not** require `type: http`
+and should always be added:
 
-parameter_fault:
-    units: bool
-    history_field: filament_fault
-
-parameter_enc_vel:
-    units: mm/s
-    history_field: encoder_velocity
-
-parameter_ext_vel:
-    units: mm/s
-    history_field: extruder_velocity
-
-parameter_motion_ago_ms:
-    units: ms
-
-parameter_nozzle_temp:
-    units: °C
-    history_field: nozzle_temperature
-
+```ini
 [shell_command filament_sensor_enable]
 command: curl -s -X POST -H "Content-Type: application/json" -d '{"enabled":true,"persist":false}' http://192.168.1.42/api/sensor
 timeout: 5.0
@@ -275,6 +368,50 @@ G-code:
 
 ---
 
+## Step 5c – Fault G-code Configuration
+
+When the ESP32 detects a fault it sends a configurable G-code command **directly
+to Klipper** via its Moonraker WebSocket connection.  This works regardless of
+whether you use the GPIO wiring or the Moonraker sensor – as long as the ESP32
+can reach Moonraker on the network.
+
+The default command is `PAUSE`.  To change it:
+
+1. Open `http://<sensor-ip>` in your browser.
+2. Scroll to **Configuration** → **Fault G-code command**.
+3. Enter your desired command, for example:
+   - `PAUSE` (default) — pauses the print
+   - `FILAMENT_RUNOUT_HANDLER` — calls a custom macro
+   - `M600` — triggers a filament-change sequence
+4. Click **Save & Apply**.
+
+You can also change it permanently via the API (survives reboots):
+
+```bash
+curl -X POST http://<sensor-ip>/api/config \
+     -H 'Content-Type: application/json' \
+     -d '{"fault_gcode":"FILAMENT_RUNOUT_HANDLER"}'
+```
+
+### Example custom runout macro in printer.cfg
+
+```ini
+[gcode_macro FILAMENT_RUNOUT_HANDLER]
+description: Custom action triggered by ESP32 fault G-code on filament runout
+gcode:
+    M118 Filament runout detected – pausing print
+    PAUSE
+    # Optional: beep notification
+    # M300 S440 P500
+```
+
+> **Note**: The fault G-code is sent over the WebSocket only when the ESP32
+> is connected to Moonraker.  If network connectivity is lost, the GPIO runout
+> signal (GPIO 27 → LOW) still fires independently and Klipper handles it via
+> the `[filament_switch_sensor]` block (Option A).
+
+---
+
 ## Step 6 – Adjust Fault Detection Parameters
 
 In the web UI **Configuration** section:
@@ -328,6 +465,10 @@ With a print running:
 | OLED blank / no display | Display not found or disabled | Check wiring (SDA/SCL/VCC/GND); verify address in `config.h`; check serial for `[OLED] WARNING` |
 | OLED shows "WiFi offline" | WiFi not connected | Normal during AP mode or reconnecting; check WiFi config |
 | OLED title blinks rapidly | `FAULT` state active | Click **Reset Fault** in web UI after fixing the filament issue |
+| `dht_valid: false` in `/api/status` | DHT22 not wired, wrong pin, or no pull-up | Check DATA wire and GPIO assignment in Pin Configuration; bare sensor needs 10 kΩ pull-up to 3.3 V |
+| DHT22 fields absent from `/api/status` | DHT22 compiled out | Firmware was built with `-DDISABLE_DHT`; rebuild without that flag |
+| Moonraker warnings about `type: http` | Moonraker build does not support HTTP sensors | Remove `[sensor esp32_filament_runout]` from `moonraker.conf`; use GPIO (Option A) and fault G-code for runout handling |
+| Fault detected but print not pausing | `fault_gcode` not set or Moonraker WebSocket disconnected | Check **Fault G-code command** in web UI; ensure Moonraker IP/port are correct; verify GPIO wiring for failsafe |
 
 ---
 

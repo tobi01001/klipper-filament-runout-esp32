@@ -132,6 +132,7 @@ IF extruder_velocity < min_ext_vel
 | `GET` | `/api/config` | JSON snapshot of `SensorConfig` |
 | `POST` | `/api/config` | Update `SensorConfig` + persist to NVS |
 | `POST` | `/api/reset` | Clear active fault, restore GPIO 27 HIGH |
+| `GET` | `/api/dht` | DHT22 snapshot: `enabled`, `valid`, `temp`, `humidity` (only when `ENABLE_DHT`) |
 
 #### Status response example
 ```json
@@ -144,9 +145,20 @@ IF extruder_velocity < min_ext_vel
   "motion_ago_ms": 18,
   "fault": false,
   "wifi": true,
-  "ip": "192.168.1.42"
+  "ip": "192.168.1.42",
+  "sensor_enabled": true,
+  "nozzle_temp": 215.3,
+  "nozzle_target": 215.0,
+  "fault_gcode": "PAUSE",
+  "dht_temp": 23.4,
+  "dht_humidity": 45.2,
+  "dht_valid": true
 }
 ```
+
+> `dht_temp`, `dht_humidity`, and `dht_valid` are only present when the firmware
+> is compiled with `ENABLE_DHT` (the default).  `dht_valid` is `false` when the
+> last read failed (sensor not connected or CRC error).
 
 #### Config POST body
 ```json
@@ -159,10 +171,14 @@ IF extruder_velocity < min_ext_vel
   "moonraker_port": 7125,
   "wifi_ssid": "MyNetwork",
   "wifi_pass": "secret",
-  "display_enabled": true
+  "display_enabled": true,
+  "fault_gcode": "PAUSE",
+  "dht_enabled": true
 }
 ```
 `wifi_pass` is only updated if a non-empty value is supplied.
+`fault_gcode` sets the G-code command sent to Klipper via the Moonraker WebSocket when a fault is detected (default `"PAUSE"`; max 63 chars).
+`dht_enabled` enables or disables DHT22 sensor polling at runtime (only present when `ENABLE_DHT`).
 
 ---
 
@@ -226,6 +242,8 @@ Uses ESP32 `Preferences` library (namespace `"filsns"`, max 15 chars).
 | `wifi_ssid` | string | *(empty)* |
 | `wifi_pass` | string | *(empty)* |
 | `disp_en` | bool | `true` |
+| `fault_gcode` | string | `"PAUSE"` |
+| `dht_en` | bool | `true` (only when `ENABLE_DHT`) |
 
 On first boot (namespace missing) all defaults are written to NVS.
 
@@ -252,6 +270,10 @@ struct SensorConfig {
     char     wifi_ssid[64];
     char     wifi_pass[64];
     bool     display_enabled;   // enable/disable SSD1306 OLED at runtime
+    char     fault_gcode[64];   // G-code sent to Klipper on fault (default "PAUSE")
+#ifdef ENABLE_DHT
+    bool     dht_enabled;       // enable/disable DHT22 sensor polling at runtime
+#endif
 };
 
 struct SensorStatus {
@@ -261,6 +283,13 @@ struct SensorStatus {
     bool        fault_active;
     bool        wifi_connected;
     char        ip_address[16];
+    float       nozzle_temp;      // current nozzle temperature (°C)
+    float       nozzle_target;    // current nozzle target temperature (°C)
+#ifdef ENABLE_DHT
+    float       dht_temperature;  // ambient temperature in °C
+    float       dht_humidity;     // relative humidity in %RH
+    bool        dht_valid;        // true when the last DHT22 read succeeded
+#endif
 };
 ```
 
@@ -303,4 +332,13 @@ business logic:
 #define OLED_I2C_ADDR   0x3C
 #define OLED_UPDATE_MS  500UL
 #define OLED_DEFAULT_EN true
+
+// DHT22 environment sensor (pass -DDISABLE_DHT to exclude entirely):
+// #define DISABLE_DHT        // ← uncomment to remove DHT22 code (saves ~15 kB flash)
+#define DHT_PIN              4        // GPIO pin for DHT22 data line
+#define DHT_READ_INTERVAL_MS 3000UL   // Minimum 2000 ms (DHT22 hardware limit)
+#define DEFAULT_DHT_ENABLED  true     // Enable on first boot
+
+// Fault G-code sent to Klipper via Moonraker WebSocket on runout detection:
+#define DEFAULT_FAULT_GCODE  "PAUSE"  // Any G-code or macro name; max 63 chars
 ```
