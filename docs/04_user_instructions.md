@@ -547,8 +547,8 @@ curl http://<sensor-ip>/api/status
 > only by Moonraker's `[sensor]` block.  Without `type: http` support, the DHT22
 > readings are available in the console (via `READ_AMBIENT_SENSOR`) and the ESP32
 > web UI, but not as a Mainsail chart/history entry.
-> See [Step 5d – MQTT Integration](#step-5d--mqtt-integration-future) for a
-> path that would restore full Sensors panel support without `type: http`.
+> See [Step 5d – MQTT Integration](#step-5d--mqtt-integration) for a
+> path that restores full Sensors panel support without `type: http`.
 
 ---
 
@@ -589,8 +589,7 @@ The previous blocking experience typically happens when:
 
 > **Do not** call `READ_AMBIENT_SENSOR` or `READ_SENSOR_STATUS` from a
 > `[delayed_gcode]` that fires during active printing.  For periodic monitoring
-> without blocking, use the MQTT integration described in Step 5d (once it is
-> implemented in the firmware).
+> without blocking, use the MQTT integration described in Step 5d.
 
 ---
 
@@ -638,171 +637,281 @@ gcode:
 
 ---
 
-## Step 5d – MQTT Integration (Future)
+## Step 5d – MQTT Integration
 
-> **⚠️ This section describes a planned feature.  MQTT support is not yet
-> implemented in the ESP32 firmware.  The configuration shown here is provided
-> for reference so that the Moonraker/Klipper side can be prepared in advance.**
-
-Moonraker supports `[sensor]` sections with `type: mqtt`.  Once the ESP32
-firmware publishes sensor data over MQTT, this becomes the most robust
-integration path: it works without `type: http`, without GPIO wiring, and
-presents the DHT22 and runout data in the Mainsail **Sensors** panel with
-full history logging — just like `type: http` does on supported Moonraker
-builds.
-
-### Why MQTT is better than HTTP polling
-
-| Feature | HTTP `type: http` | Shell command (`curl`) | MQTT `type: mqtt` |
-|---------|------------------|----------------------|------------------|
-| Mainsail Sensors panel | ✓ (if supported) | ✗ | ✓ |
-| History logging | ✓ (if supported) | ✗ | ✓ |
-| Blocks G-code queue | ✗ | Briefly (~100 ms) | ✗ (event-driven) |
-| Works on all Moonraker builds | ✗ | ✓ | ✓ |
-| Push-based (instant updates) | ✗ (polled) | ✗ (on demand) | ✓ |
-| Requires MQTT broker | ✗ | ✗ | ✓ |
+MQTT integration is now **fully implemented** in the firmware.  The ESP32 publishes
+sensor state to an MQTT broker and subscribes to command topics, enabling
+bidirectional control from Moonraker automations, FHEM, Home Assistant, Node-RED,
+or any MQTT-capable system.
 
 ---
 
-### What the ESP32 firmware would need to publish
+### Topic Map
 
-Once MQTT is implemented in the firmware, the ESP32 should publish to the
-following topics (JSON payloads, retained flag on, QoS 1):
+All topics share a configurable **topic prefix** (default `esp32/filament_sensor`).
 
-| Topic | Direction | Payload example |
-|-------|-----------|----------------|
-| `esp32/filament_sensor/state` | ESP32 → broker | `{"fault":false,"sensor_enabled":true,"enc_vel":3.47,"ext_vel":3.50,"motion_ago_ms":350,"nozzle_temp":215.0,"dht_temp":23.4,"dht_humidity":45.2,"dht_valid":true}` |
-| `esp32/filament_sensor/cmd` | broker → ESP32 | `{"enable":true}` or `{"reset":true}` |
+| Topic | Direction | Payload | Retained |
+|-------|-----------|---------|----------|
+| `<prefix>/state` | ESP32 → broker | JSON object (see below) | ✓ |
+| `<prefix>/availability` | ESP32 → broker | `"online"` or `"offline"` (LWT) | ✓ |
+| `<prefix>/cmd/enable` | broker → ESP32 | `"1"` / `"true"` / `"on"` to enable; `"0"` / `"false"` / `"off"` to disable | — |
+| `<prefix>/cmd/reset` | broker → ESP32 | Any payload (e.g. `"1"`) | — |
 
-The `state` topic should be published:
-- On every sensor state change (fault detected / cleared, etc.)
-- Periodically (e.g., every 5 s) so Moonraker always has a fresh value.
+#### State payload example
+
+```json
+{
+  "state":          "PRINTING",
+  "fault":          false,
+  "sensor_enabled": true,
+  "enc_vel":        3.47,
+  "ext_vel":        3.50,
+  "motion_ago_ms":  350,
+  "nozzle_temp":    215.0,
+  "dht_temp":       23.4,
+  "dht_humidity":   45.2,
+  "dht_valid":      true
+}
+```
+
+State is published:
+- Immediately on every state change (fault, reset, enable/disable)
+- As a heartbeat every **5 seconds** while connected
 
 ---
 
-### Prerequisites
+### 1. Configure the broker in the web UI
 
-| Item | Notes |
-|------|-------|
-| MQTT broker | Mosquitto is the most common choice; install on the Raspberry Pi with `sudo apt install mosquitto mosquitto-clients` |
-| Moonraker MQTT component | Requires a `[mqtt]` section in `moonraker.conf` pointing to the broker |
-| ESP32 MQTT firmware | **Not yet implemented** — needs `PubSubClient` or `AsyncMqttClient` library |
+Open the device web UI → **MQTT** tab and fill in:
+
+| Field | Description |
+|-------|-------------|
+| **Broker hostname / IP** | IP or hostname of your MQTT broker |
+| **Port** | Default `1883`; use `8883` for TLS (not yet supported) |
+| **Username / Password** | Leave blank for anonymous brokers |
+| **Topic prefix** | Default `esp32/filament_sensor`; change to avoid collisions |
+| **Enable MQTT client** | Tick to activate |
+
+Click **Save & Apply**.  The page shows **connected ✓** once the broker accepts
+the connection.
+
+> **Note**: Changes take effect immediately — no reboot required.
 
 ---
 
-### 1. Mosquitto broker on the Raspberry Pi
+### 2. MQTT Broker options
+
+#### Option A – Mosquitto on Raspberry Pi (recommended)
 
 ```bash
 sudo apt install mosquitto mosquitto-clients
 sudo systemctl enable --now mosquitto
 ```
 
-To verify the broker is running:
+Verify by listening for ESP32 messages:
 
 ```bash
 mosquitto_sub -t "esp32/filament_sensor/#" -v
 ```
 
----
+#### Option B – FHEM MQTT2_SERVER (no separate broker needed)
 
-### 2. moonraker.conf
+FHEM can act as the broker itself.  Add to `fhem.cfg`:
 
-Add the following to `moonraker.conf`, replacing `<BROKER_IP>` with the IP
-of your Raspberry Pi (usually `localhost` or `127.0.0.1` if the broker runs
-on the same host as Moonraker):
-
-```ini
-# ── Moonraker MQTT client ───────────────────────────────────────────────────
-[mqtt]
-address: localhost
-# port: 1883        # default MQTT port; uncomment to override
-# username:         # uncomment if your broker requires authentication
-# password:         # uncomment if your broker requires authentication
-
-# ── MQTT Sensor (type: mqtt – works on all current Moonraker builds) ─────────
-#
-# Uncomment this block once ESP32 MQTT firmware support is implemented.
-#
-# [sensor esp32_filament_runout]
-# type: mqtt
-# state_topic: esp32/filament_sensor/state
-# # Jinja2 template to extract values from the JSON payload:
-# state_response_template:
-#     {% set d = payload | fromjson %}
-#     {% do set_result("fault",         d.get("fault", false) | int) %}
-#     {% do set_result("sensor_enabled",d.get("sensor_enabled", true) | int) %}
-#     {% do set_result("enc_vel",       d.get("enc_vel", 0.0) | float) %}
-#     {% do set_result("motion_ago_ms", d.get("motion_ago_ms", 0) | float) %}
-#     {% do set_result("nozzle_temp",   d.get("nozzle_temp", 0.0) | float) %}
-#     {% do set_result("dht_temp",      d.get("dht_temp", 0.0) | float) %}
-#     {% do set_result("dht_humidity",  d.get("dht_humidity", 0.0) | float) %}
-# qos: 1
-#
-# # ── Parameter metadata (Mainsail Sensors panel labels and history) ────────
-# parameter_sensor_enabled:
-#     units: bool
-#
-# parameter_fault:
-#     units: bool
-#     history_field: filament_fault
-#
-# parameter_enc_vel:
-#     units: mm/s
-#     history_field: encoder_velocity
-#
-# parameter_motion_ago_ms:
-#     units: ms
-#
-# parameter_nozzle_temp:
-#     units: °C
-#     history_field: nozzle_temperature
-#
-# parameter_dht_temp:
-#     units: °C
-#     history_field: ambient_temperature
-#
-# parameter_dht_humidity:
-#     units: %RH
-#     history_field: ambient_humidity
+```perl
+define mqtt2srv MQTT2_SERVER 1883 global
+attr   mqtt2srv room Klipper
 ```
 
-Restart Moonraker after editing:
+FHEM clients then connect to `<FHEM_HOST>:1883`.
+
+---
+
+### 3. FHEM Integration (MQTT2_SERVER)
+
+Add the following to your `fhem.cfg` (or use the FHEM web UI → Edit files):
+
+```perl
+# ── Auto-create ESP32 device from retained state topic ──────────────────────
+define filament_sensor MQTT2_DEVICE
+attr   filament_sensor IODev      mqtt2srv
+attr   filament_sensor readingList esp32/filament_sensor/state:.* { \
+    my %d = %{json2nameValue($EVENT)}; \
+    map { ("r:$_", $d{$_}) } keys %d \
+}
+attr   filament_sensor setList \
+    enable:1,0         esp32/filament_sensor/cmd/enable $VALUE \
+    reset:noArg        esp32/filament_sensor/cmd/reset  1
+attr   filament_sensor room Klipper
+attr   filament_sensor icon it_wifi
+```
+
+This maps every key in the JSON payload to a FHEM reading (`r:state`,
+`r:fault`, `r:enc_vel`, etc.) and adds two set commands:
+
+```
+set filament_sensor enable 1    # enable the sensor
+set filament_sensor enable 0    # disable the sensor
+set filament_sensor reset       # clear an active fault
+```
+
+#### FHEM availability indicator
+
+```perl
+attr filament_sensor readingList \
+    esp32/filament_sensor/availability:.* r:availability
+```
+
+`r:availability` will be `online` or `offline`.
+
+#### FHEM notify on fault
+
+```perl
+define n_filament_fault notify filament_sensor:r:fault:.* {
+    if (ReadingsVal("filament_sensor","r:fault","false") eq "true") {
+        fhem("set alarm_siren on");   # replace with your action
+    }
+}
+```
+
+---
+
+### 4. Moonraker / Klipper Integration
+
+Add the following to `moonraker.conf`, replacing `<BROKER_IP>` with the
+broker IP (usually `localhost` or `127.0.0.1` if Mosquitto runs on the
+Raspberry Pi):
+
+```ini
+# ── Moonraker MQTT client ────────────────────────────────────────────────────
+[mqtt]
+address: <BROKER_IP>
+# port: 1883        # default; uncomment to override
+# username:         # uncomment if your broker requires authentication
+# password:
+
+# ── ESP32 filament sensor via MQTT ───────────────────────────────────────────
+[sensor esp32_filament_runout]
+type: mqtt
+state_topic: esp32/filament_sensor/state
+state_response_template:
+    {% set d = payload | fromjson %}
+    {% do set_result("fault",          d.get("fault", false) | int) %}
+    {% do set_result("sensor_enabled", d.get("sensor_enabled", true) | int) %}
+    {% do set_result("enc_vel",        d.get("enc_vel", 0.0) | float) %}
+    {% do set_result("motion_ago_ms",  d.get("motion_ago_ms", 0) | float) %}
+    {% do set_result("nozzle_temp",    d.get("nozzle_temp", 0.0) | float) %}
+    {% do set_result("dht_temp",       d.get("dht_temp", 0.0) | float) %}
+    {% do set_result("dht_humidity",   d.get("dht_humidity", 0.0) | float) %}
+qos: 1
+
+# ── Parameter metadata (Mainsail Sensors panel + history logging) ─────────────
+parameter_fault:
+    units: bool
+    history_field: filament_fault
+
+parameter_sensor_enabled:
+    units: bool
+
+parameter_enc_vel:
+    units: mm/s
+    history_field: encoder_velocity
+
+parameter_motion_ago_ms:
+    units: ms
+
+parameter_nozzle_temp:
+    units: °C
+    history_field: nozzle_temperature
+
+parameter_dht_temp:
+    units: °C
+    history_field: ambient_temperature
+
+parameter_dht_humidity:
+    units: %RH
+    history_field: ambient_humidity
+```
+
+Restart Moonraker:
 
 ```bash
 sudo systemctl restart moonraker
 ```
 
----
+The sensor then appears in the Mainsail **Sensors** panel with live values
+and history graphs.
 
-### 3. Testing with mock MQTT messages (before firmware MQTT is ready)
+#### Controlling the sensor from a Klipper macro
 
-You can validate the Moonraker configuration immediately by manually
-publishing a test payload using `mosquitto_pub`:
+Add to `printer.cfg`:
 
-```bash
-mosquitto_pub -t "esp32/filament_sensor/state" -r -m \
-  '{"fault":false,"sensor_enabled":true,"enc_vel":3.47,"ext_vel":3.50,"motion_ago_ms":350,"nozzle_temp":215.0,"dht_temp":23.4,"dht_humidity":45.2,"dht_valid":true}'
+```ini
+[gcode_macro FILAMENT_SENSOR_ENABLE]
+description: Enable ESP32 filament runout sensor via MQTT
+gcode:
+    {action_call_remote_method("publish_mqtt_topic",
+        topic="esp32/filament_sensor/cmd/enable",
+        payload="1")}
+
+[gcode_macro FILAMENT_SENSOR_DISABLE]
+description: Disable ESP32 filament runout sensor via MQTT
+gcode:
+    {action_call_remote_method("publish_mqtt_topic",
+        topic="esp32/filament_sensor/cmd/enable",
+        payload="0")}
+
+[gcode_macro FILAMENT_FAULT_RESET]
+description: Reset ESP32 filament fault via MQTT
+gcode:
+    {action_call_remote_method("publish_mqtt_topic",
+        topic="esp32/filament_sensor/cmd/reset",
+        payload="1")}
 ```
 
-After publishing, the sensor should appear in the Mainsail **Sensors** panel
-within a few seconds.  To simulate a fault:
+---
+
+### 5. Testing
+
+Verify published messages with `mosquitto_sub`:
 
 ```bash
-mosquitto_pub -t "esp32/filament_sensor/state" -r -m \
-  '{"fault":true,"sensor_enabled":true,"enc_vel":0.0,"ext_vel":3.50,"motion_ago_ms":9000,"nozzle_temp":215.0,"dht_temp":23.4,"dht_humidity":45.2,"dht_valid":true}'
+mosquitto_sub -t "esp32/filament_sensor/#" -v
+```
+
+Send test commands:
+
+```bash
+# Disable sensor
+mosquitto_pub -t "esp32/filament_sensor/cmd/enable" -m "0"
+
+# Re-enable sensor
+mosquitto_pub -t "esp32/filament_sensor/cmd/enable" -m "1"
+
+# Clear fault
+mosquitto_pub -t "esp32/filament_sensor/cmd/reset"  -m "1"
 ```
 
 ---
 
-> **Summary of what needs to be implemented in the firmware:**
-> 1. Add `PubSubClient` or `AsyncMqttClient` as a library dependency in `platformio.ini`.
-> 2. Add an `mqtt_client.cpp/.h` module that connects to the broker on boot.
-> 3. Publish a JSON `state` payload to `esp32/filament_sensor/state` on every
->    state change and every ~5 s.
-> 4. Subscribe to `esp32/filament_sensor/cmd` to handle `enable`/`disable`/`reset`
->    commands from Moonraker automations or macros.
-> 5. Make the broker IP, port, and topic prefix configurable in the web UI and
->    stored in NVS (new keys: `mqtt_host`, `mqtt_port`, `mqtt_topic_prefix`).
+### 6. Bidirectional control summary
+
+```
+FHEM / Klipper macro
+        │  publish cmd/enable, cmd/reset
+        ▼
+   MQTT Broker (Mosquitto or FHEM MQTT2_SERVER)
+        │                        ▲
+        │  subscribe              │  publish state, availability
+        ▼                        │
+   ESP32 filament sensor ────────┘
+        │  fault → GPIO 27 LOW
+        ▼
+   Klipper [filament_switch_sensor] → PAUSE macro
+```
+
+> **Note**: The GPIO runout signal (GPIO 27 → LOW) fires independently of MQTT
+> and provides a hardware-level backup even when the network is unavailable.
 
 ---
 

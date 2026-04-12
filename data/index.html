@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="ui-version" content="1.1.7" />
+  <meta name="ui-version" content="1.2.0" />
   <title>Filament Runout Sensor</title>
   <style>
     /* ─── Reset & base ──────────────────────────────────────────────────────── */
@@ -83,6 +83,9 @@
     .toggle-row label{margin:0;flex:1 1 220px}
     input[type=checkbox]{width:18px;height:18px;accent-color:#06f;cursor:pointer}
 
+    /* ─── Inline topic code ─────────────────────────────────────────────────── */
+    .topic{background:#2a2a2a;padding:1px 4px;border-radius:3px;font-size:.8rem}
+
     /* ─── Responsive ─────────────────────────────────────────────────────────── */
     @media(max-width:560px){
       main{padding:10px}
@@ -158,6 +161,13 @@
           <path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14"/>
         </svg>
         Pins
+      </div>
+      <!-- MQTT -->
+      <div class="nav-tab" id="tab-mqtt" onclick="showPage('mqtt')">
+        <svg viewBox="0 0 24 24">
+          <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.7 11.5a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.63 1h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 8.6a16 16 0 0 0 6 6l.96-.97a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/>
+        </svg>
+        MQTT
       </div>
     </div>
   </nav>
@@ -366,14 +376,58 @@
         <div id="pin-msg" style="font-size:.8rem;text-align:center;margin-top:6px;min-height:1.2em;color:#0f0"></div>
       </div>
     </div>
+
+    <!-- ─── Page: MQTT Configuration ─────────────────────────────────────── -->
+    <div class="page" id="page-mqtt">
+      <div class="card">
+        <h2>MQTT Configuration</h2>
+        <p style="font-size:.8rem;color:#aaa;margin-bottom:8px">
+          Connect to an MQTT broker to publish sensor state and receive commands.
+          The broker can be Mosquitto, FHEM MQTT2_SERVER, or any standard broker.
+        </p>
+        <div id="mqtt-conn-status" style="font-size:.8rem;margin-bottom:8px;color:#888">Status: —</div>
+        <label>Broker hostname / IP</label>
+        <input type="text" id="mqtt-broker" maxlength="63" placeholder="192.168.1.100 or hostname"/>
+        <div class="row">
+          <div>
+            <label>Port</label>
+            <input type="number" id="mqtt-port" step="1" min="1" max="65535" value="1883"/>
+          </div>
+          <div>
+            <label>Username <span style="color:#666;font-size:.75rem">(leave blank for anonymous)</span></label>
+            <input type="text" id="mqtt-user" maxlength="31"/>
+          </div>
+        </div>
+        <label>Password <span style="color:#666;font-size:.75rem">(leave blank to keep current)</span></label>
+        <input type="password" id="mqtt-pass" maxlength="31" placeholder="leave blank to keep current"/>
+        <label>Topic prefix <span style="color:#666;font-size:.75rem">(e.g. esp32/filament_sensor)</span></label>
+        <input type="text" id="mqtt-prefix" maxlength="47" placeholder="esp32/filament_sensor"/>
+        <div class="toggle-row" style="margin-top:10px">
+          <input type="checkbox" id="mqtt-en"/>
+          <label for="mqtt-en">Enable MQTT client</label>
+        </div>
+        <p style="font-size:.75rem;color:#aaa;margin:8px 0 2px">
+          <strong>Topics published</strong> (retained):
+          <code class="topic">&lt;prefix&gt;/state</code>,
+          <code class="topic">&lt;prefix&gt;/availability</code>
+        </p>
+        <p style="font-size:.75rem;color:#aaa;margin:4px 0 6px">
+          <strong>Topics subscribed</strong>:
+          <code class="topic">&lt;prefix&gt;/cmd/enable</code>,
+          <code class="topic">&lt;prefix&gt;/cmd/reset</code>
+        </p>
+        <button class="btn-save" onclick="saveMqtt()">Save &amp; Apply</button>
+        <div id="mqtt-msg" style="font-size:.8rem;text-align:center;margin-top:6px;min-height:1.2em;color:#0f0"></div>
+      </div>
+    </div>
   </main>
 
   <script>
-    const UI_VERSION = "1.1.7"; // bumped automatically by release.yml on each GitHub release
+    const UI_VERSION = "1.2.0"; // bumped automatically by release.yml on each GitHub release
     let maxVel = 10;
 
     // ─── Navigation ──────────────────────────────────────────────────────────────
-    const PAGES = ['status','config','calib','diag','pins'];
+    const PAGES = ['status','config','calib','diag','pins','mqtt'];
 
     function showPage(name) {
       PAGES.forEach(p => {
@@ -384,6 +438,7 @@
       if (name === 'calib')  loadOta();
       if (name === 'diag')   refreshDiag();
       if (name === 'pins')   loadPins();
+      if (name === 'mqtt')   loadMqtt();
     }
 
     // ─── Status ──────────────────────────────────────────────────────────────────
@@ -827,6 +882,58 @@
           msgEl.textContent = '✗ Request failed';
           msgEl.style.color = '#f44';
         });
+    }
+
+    // ─── MQTT Configuration ──────────────────────────────────────────────────────
+    function loadMqtt() {
+      fetch('/api/mqtt')
+        .then(r=>r.json())
+        .then(d=>{
+          document.getElementById('mqtt-broker').value  = d.broker || '';
+          document.getElementById('mqtt-port').value    = d.port   || 1883;
+          document.getElementById('mqtt-user').value    = d.username || '';
+          document.getElementById('mqtt-prefix').value  = d.topic_prefix || 'esp32/filament_sensor';
+          document.getElementById('mqtt-en').checked    = (d.enabled === true);
+          const connEl = document.getElementById('mqtt-conn-status');
+          if (!d.enabled) {
+            connEl.textContent = 'Status: disabled';
+            connEl.style.color = '#666';
+          } else if (d.connected) {
+            connEl.textContent = 'Status: connected ✓';
+            connEl.style.color = '#4f4';
+          } else {
+            connEl.textContent = 'Status: disconnected';
+            connEl.style.color = '#f66';
+          }
+        }).catch(()=>{});
+    }
+
+    function saveMqtt() {
+      const body = {
+        broker:       document.getElementById('mqtt-broker').value,
+        port:         parseInt(document.getElementById('mqtt-port').value, 10),
+        username:     document.getElementById('mqtt-user').value,
+        password:     document.getElementById('mqtt-pass').value,
+        topic_prefix: document.getElementById('mqtt-prefix').value,
+        enabled:      document.getElementById('mqtt-en').checked,
+      };
+      const msgEl = document.getElementById('mqtt-msg');
+      msgEl.textContent = 'Saving…';
+      msgEl.style.color = '#aaa';
+      fetch('/api/mqtt', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(body)})
+        .then(r=>r.json())
+        .then(d=>{
+          if (d.ok) {
+            msgEl.textContent = '✓ Saved';
+            msgEl.style.color = '#0f0';
+            setTimeout(()=>{ loadMqtt(); msgEl.textContent=''; }, 2000);
+          } else {
+            msgEl.textContent = '✗ ' + (d.error || 'Error');
+            msgEl.style.color = '#f44';
+          }
+        })
+        .catch(()=>{ msgEl.textContent='✗ Request failed'; msgEl.style.color='#f44'; });
     }
 
     loadConfig();
