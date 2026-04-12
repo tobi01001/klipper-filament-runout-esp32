@@ -547,8 +547,54 @@ curl http://<sensor-ip>/api/status
 > only by Moonraker's `[sensor]` block.  Without `type: http` support, the DHT22
 > readings are available in the console (via `READ_AMBIENT_SENSOR`) and the ESP32
 > web UI, but not as a Mainsail chart/history entry.
+> See [Step 5d – MQTT Integration](#step-5d--mqtt-integration-future) for a
+> path that would restore full Sensors panel support without `type: http`.
 
 ---
+
+### 6. Why `RUN_SHELL_COMMAND` does not block printing
+
+**Short answer:** the `[shell_command]` mechanism in `moonraker.conf` is
+executed by Moonraker's asyncio event loop in a subprocess — the Klipper
+G-code queue does briefly pause at `RUN_SHELL_COMMAND` until the command
+returns, but for a local-network `curl` call this takes ~100 ms or less,
+which is far shorter than the motion look-ahead buffer.  In practice the
+print never pauses visibly.
+
+**Detailed explanation:**
+
+| Layer | What happens |
+|-------|-------------|
+| Klipper macro | `RUN_SHELL_COMMAND CMD=read_dht_sensor` sends a request to Moonraker's HTTP API |
+| Moonraker | Launches `curl` as an asyncio subprocess; this is non-blocking to Moonraker's own event loop |
+| Klipper G-code queue | Pauses at `RUN_SHELL_COMMAND` until Moonraker streams back the result (typically 50–200 ms on a local network) |
+| Klipper motion system | Continues executing already-planned moves from the look-ahead buffer — the printer **keeps moving** during this pause |
+
+The previous blocking experience typically happens when:
+- A shell command is called **repeatedly during active printing** (e.g., inside
+  a `[delayed_gcode]` that fires every 5 s), causing the G-code queue to stall
+  periodically.
+- The subprocess has no timeout and the target is unreachable (hangs for 30+ s).
+- A Klipper-side `[gcode_shell_command]` (Klipper extra, not Moonraker) is
+  used — its subprocess runs directly in Klipper's reactor and can stall the
+  G-code queue if it takes too long.
+
+**The approach used here avoids these pitfalls:**
+- `READ_AMBIENT_SENSOR` is designed to be called from `PRINT_START` — once,
+  before active extrusion starts — so the G-code queue pause is irrelevant.
+- `curl --max-time 3` ensures the command always returns within 3 s even if
+  the ESP32 is unreachable, limiting the worst-case stall.
+- `FILAMENT_SENSOR_ENABLE/DISABLE/RESET` are also called only at print
+  start/end where a brief G-code pause is harmless.
+
+> **Do not** call `READ_AMBIENT_SENSOR` or `READ_SENSOR_STATUS` from a
+> `[delayed_gcode]` that fires during active printing.  For periodic monitoring
+> without blocking, use the MQTT integration described in Step 5d (once it is
+> implemented in the firmware).
+
+---
+
+## Step 5c – Fault G-code Configuration
 
 When the ESP32 detects a fault it sends a configurable G-code command **directly
 to Klipper** via its Moonraker WebSocket connection.  This works regardless of
@@ -589,6 +635,174 @@ gcode:
 > is connected to Moonraker.  If network connectivity is lost, the GPIO runout
 > signal (GPIO 27 → LOW) still fires independently and Klipper handles it via
 > the `[filament_switch_sensor]` block (Option A).
+
+---
+
+## Step 5d – MQTT Integration (Future)
+
+> **⚠️ This section describes a planned feature.  MQTT support is not yet
+> implemented in the ESP32 firmware.  The configuration shown here is provided
+> for reference so that the Moonraker/Klipper side can be prepared in advance.**
+
+Moonraker supports `[sensor]` sections with `type: mqtt`.  Once the ESP32
+firmware publishes sensor data over MQTT, this becomes the most robust
+integration path: it works without `type: http`, without GPIO wiring, and
+presents the DHT22 and runout data in the Mainsail **Sensors** panel with
+full history logging — just like `type: http` does on supported Moonraker
+builds.
+
+### Why MQTT is better than HTTP polling
+
+| Feature | HTTP `type: http` | Shell command (`curl`) | MQTT `type: mqtt` |
+|---------|------------------|----------------------|------------------|
+| Mainsail Sensors panel | ✓ (if supported) | ✗ | ✓ |
+| History logging | ✓ (if supported) | ✗ | ✓ |
+| Blocks G-code queue | ✗ | Briefly (~100 ms) | ✗ (event-driven) |
+| Works on all Moonraker builds | ✗ | ✓ | ✓ |
+| Push-based (instant updates) | ✗ (polled) | ✗ (on demand) | ✓ |
+| Requires MQTT broker | ✗ | ✗ | ✓ |
+
+---
+
+### What the ESP32 firmware would need to publish
+
+Once MQTT is implemented in the firmware, the ESP32 should publish to the
+following topics (JSON payloads, retained flag on, QoS 1):
+
+| Topic | Direction | Payload example |
+|-------|-----------|----------------|
+| `esp32/filament_sensor/state` | ESP32 → broker | `{"fault":false,"sensor_enabled":true,"enc_vel":3.47,"ext_vel":3.50,"motion_ago_ms":350,"nozzle_temp":215.0,"dht_temp":23.4,"dht_humidity":45.2,"dht_valid":true}` |
+| `esp32/filament_sensor/cmd` | broker → ESP32 | `{"enable":true}` or `{"reset":true}` |
+
+The `state` topic should be published:
+- On every sensor state change (fault detected / cleared, etc.)
+- Periodically (e.g., every 5 s) so Moonraker always has a fresh value.
+
+---
+
+### Prerequisites
+
+| Item | Notes |
+|------|-------|
+| MQTT broker | Mosquitto is the most common choice; install on the Raspberry Pi with `sudo apt install mosquitto mosquitto-clients` |
+| Moonraker MQTT component | Requires a `[mqtt]` section in `moonraker.conf` pointing to the broker |
+| ESP32 MQTT firmware | **Not yet implemented** — needs `PubSubClient` or `AsyncMqttClient` library |
+
+---
+
+### 1. Mosquitto broker on the Raspberry Pi
+
+```bash
+sudo apt install mosquitto mosquitto-clients
+sudo systemctl enable --now mosquitto
+```
+
+To verify the broker is running:
+
+```bash
+mosquitto_sub -t "esp32/filament_sensor/#" -v
+```
+
+---
+
+### 2. moonraker.conf
+
+Add the following to `moonraker.conf`, replacing `<BROKER_IP>` with the IP
+of your Raspberry Pi (usually `localhost` or `127.0.0.1` if the broker runs
+on the same host as Moonraker):
+
+```ini
+# ── Moonraker MQTT client ───────────────────────────────────────────────────
+[mqtt]
+address: localhost
+# port: 1883        # default MQTT port; uncomment to override
+# username:         # uncomment if your broker requires authentication
+# password:         # uncomment if your broker requires authentication
+
+# ── MQTT Sensor (type: mqtt – works on all current Moonraker builds) ─────────
+#
+# Uncomment this block once ESP32 MQTT firmware support is implemented.
+#
+# [sensor esp32_filament_runout]
+# type: mqtt
+# state_topic: esp32/filament_sensor/state
+# # Jinja2 template to extract values from the JSON payload:
+# state_response_template:
+#     {% set d = payload | fromjson %}
+#     {% do set_result("fault",         d.get("fault", false) | int) %}
+#     {% do set_result("sensor_enabled",d.get("sensor_enabled", true) | int) %}
+#     {% do set_result("enc_vel",       d.get("enc_vel", 0.0) | float) %}
+#     {% do set_result("motion_ago_ms", d.get("motion_ago_ms", 0) | float) %}
+#     {% do set_result("nozzle_temp",   d.get("nozzle_temp", 0.0) | float) %}
+#     {% do set_result("dht_temp",      d.get("dht_temp", 0.0) | float) %}
+#     {% do set_result("dht_humidity",  d.get("dht_humidity", 0.0) | float) %}
+# qos: 1
+#
+# # ── Parameter metadata (Mainsail Sensors panel labels and history) ────────
+# parameter_sensor_enabled:
+#     units: bool
+#
+# parameter_fault:
+#     units: bool
+#     history_field: filament_fault
+#
+# parameter_enc_vel:
+#     units: mm/s
+#     history_field: encoder_velocity
+#
+# parameter_motion_ago_ms:
+#     units: ms
+#
+# parameter_nozzle_temp:
+#     units: °C
+#     history_field: nozzle_temperature
+#
+# parameter_dht_temp:
+#     units: °C
+#     history_field: ambient_temperature
+#
+# parameter_dht_humidity:
+#     units: %RH
+#     history_field: ambient_humidity
+```
+
+Restart Moonraker after editing:
+
+```bash
+sudo systemctl restart moonraker
+```
+
+---
+
+### 3. Testing with mock MQTT messages (before firmware MQTT is ready)
+
+You can validate the Moonraker configuration immediately by manually
+publishing a test payload using `mosquitto_pub`:
+
+```bash
+mosquitto_pub -t "esp32/filament_sensor/state" -r -m \
+  '{"fault":false,"sensor_enabled":true,"enc_vel":3.47,"ext_vel":3.50,"motion_ago_ms":350,"nozzle_temp":215.0,"dht_temp":23.4,"dht_humidity":45.2,"dht_valid":true}'
+```
+
+After publishing, the sensor should appear in the Mainsail **Sensors** panel
+within a few seconds.  To simulate a fault:
+
+```bash
+mosquitto_pub -t "esp32/filament_sensor/state" -r -m \
+  '{"fault":true,"sensor_enabled":true,"enc_vel":0.0,"ext_vel":3.50,"motion_ago_ms":9000,"nozzle_temp":215.0,"dht_temp":23.4,"dht_humidity":45.2,"dht_valid":true}'
+```
+
+---
+
+> **Summary of what needs to be implemented in the firmware:**
+> 1. Add `PubSubClient` or `AsyncMqttClient` as a library dependency in `platformio.ini`.
+> 2. Add an `mqtt_client.cpp/.h` module that connects to the broker on boot.
+> 3. Publish a JSON `state` payload to `esp32/filament_sensor/state` on every
+>    state change and every ~5 s.
+> 4. Subscribe to `esp32/filament_sensor/cmd` to handle `enable`/`disable`/`reset`
+>    commands from Moonraker automations or macros.
+> 5. Make the broker IP, port, and topic prefix configurable in the web UI and
+>    stored in NVS (new keys: `mqtt_host`, `mqtt_port`, `mqtt_topic_prefix`).
 
 ---
 
