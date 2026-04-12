@@ -276,10 +276,7 @@ Uncomment it only if your Moonraker does not show the warnings listed above:
 # timeout: 3.0
 # poll_rate: 5.0
 #
-# parameter_sensor_enabled:
-#     units: bool
 # parameter_fault:
-#     units: bool
 #     history_field: filament_fault
 # parameter_enc_vel:
 #     units: mm/s
@@ -807,11 +804,7 @@ qos: 1
 
 # ── Parameter metadata (Mainsail Sensors panel + history logging) ─────────────
 parameter_fault:
-    units: bool
     history_field: filament_fault
-
-parameter_sensor_enabled:
-    units: bool
 
 parameter_enc_vel:
     units: mm/s
