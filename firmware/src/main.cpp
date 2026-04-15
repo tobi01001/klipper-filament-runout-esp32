@@ -51,6 +51,7 @@
 #include "moonraker.h"
 #include "ota_runtime.h"
 #include "dht_sensor.h"
+#include "mqtt_handler.h"
 
 // ─── Global shared state ──────────────────────────────────────────────────────
 static SensorConfig    g_config{};
@@ -127,6 +128,7 @@ static void core0_task(void * /*param*/) {
     wifi_init(g_status_mutex, g_config_mutex, &g_status, &g_config);
     moonraker_init(g_status_mutex, g_config_mutex, &g_status, &g_config);
     ota_runtime_init(g_config_mutex, &g_config);
+    mqtt_init(g_status_mutex, g_config_mutex, &g_status, &g_config);
 #ifdef ENABLE_OLED
     // ── Initialise OLED display (Core 0 only – I²C stays on one core) ─────
     display_init(g_status_mutex, g_config_mutex, &g_status, &g_config);
@@ -163,6 +165,7 @@ static void core0_task(void * /*param*/) {
         if (wifi_connected) {
             ota_runtime_tick(true);
             moonraker_tick();
+            mqtt_tick();
         } else {
             moonraker_set_disconnected();
         }

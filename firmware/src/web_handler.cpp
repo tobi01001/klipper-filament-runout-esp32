@@ -8,6 +8,7 @@
 #include "config.h"
 #include "debug_log.h"
 #include "dht_sensor.h"
+#include "mqtt_handler.h"
 
 #include <Arduino.h>
 #include <WebServer.h>
@@ -629,7 +630,77 @@ static void handle_post_pins() {
     ESP.restart();
 }
 
-static void handle_not_found() {  const String uri = s_server.uri();
+static void handle_get_mqtt() {
+    const MqttConfig cfg = mqtt_config_snapshot();
+
+    JsonDocument doc;
+    doc["broker"]       = cfg.broker;
+    doc["port"]         = cfg.port;
+    doc["username"]     = cfg.username;
+    // password is never sent to the client for security reasons
+    doc["topic_prefix"] = cfg.topic_prefix;
+    doc["enabled"]      = cfg.enabled;
+    doc["connected"]    = mqtt_is_connected();
+
+    String out;
+    serializeJson(doc, out);
+    s_server.send(200, "application/json", out);
+}
+
+static void handle_post_mqtt() {
+    if (!s_server.hasArg("plain")) {
+        s_server.send(400, "application/json", "{\"ok\":false,\"error\":\"no body\"}");
+        return;
+    }
+
+    JsonDocument doc;
+    if (deserializeJson(doc, s_server.arg("plain"))) {
+        s_server.send(400, "application/json",
+                      "{\"ok\":false,\"error\":\"invalid JSON\"}");
+        return;
+    }
+
+    // Take snapshot, apply partial updates, then commit
+    MqttConfig cfg = mqtt_config_snapshot();
+
+    if (doc["broker"].is<const char *>()) {
+        strncpy(cfg.broker,
+                doc["broker"].as<const char *>(),
+                sizeof(cfg.broker) - 1);
+        cfg.broker[sizeof(cfg.broker) - 1] = '\0';
+    }
+    if (doc["port"].is<uint16_t>()) {
+        cfg.port = doc["port"].as<uint16_t>();
+    }
+    if (doc["username"].is<const char *>()) {
+        strncpy(cfg.username,
+                doc["username"].as<const char *>(),
+                sizeof(cfg.username) - 1);
+        cfg.username[sizeof(cfg.username) - 1] = '\0';
+    }
+    // Only update password when a non-empty value is supplied
+    const char *new_pass = doc["password"] | "";
+    if (new_pass[0] != '\0') {
+        strncpy(cfg.password, new_pass, sizeof(cfg.password) - 1);
+        cfg.password[sizeof(cfg.password) - 1] = '\0';
+    }
+    if (doc["topic_prefix"].is<const char *>()) {
+        const char *pfx = doc["topic_prefix"].as<const char *>();
+        if (pfx[0] != '\0') {
+            strncpy(cfg.topic_prefix, pfx, sizeof(cfg.topic_prefix) - 1);
+            cfg.topic_prefix[sizeof(cfg.topic_prefix) - 1] = '\0';
+        }
+    }
+    if (doc["enabled"].is<bool>()) {
+        cfg.enabled = doc["enabled"].as<bool>();
+    }
+
+    mqtt_config_update(cfg);
+    s_server.send(200, "application/json", "{\"ok\":true}");
+}
+
+static void handle_not_found() {
+  const String uri = s_server.uri();
   if (uri.startsWith("/api/")) {
     s_server.send(404, "application/json", "{\"ok\":false,\"error\":\"not found\"}");
     return;
@@ -689,6 +760,8 @@ void web_init(SemaphoreHandle_t status_mutex,
 #endif
     s_server.on("/api/pins",       HTTP_GET,  handle_get_pins);
     s_server.on("/api/pins",       HTTP_POST, handle_post_pins);
+    s_server.on("/api/mqtt",       HTTP_GET,  handle_get_mqtt);
+    s_server.on("/api/mqtt",       HTTP_POST, handle_post_mqtt);
     s_server.onNotFound(handle_not_found);
 
     s_server.begin();
